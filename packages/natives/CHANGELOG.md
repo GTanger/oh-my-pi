@@ -4,7 +4,7 @@
 
 ### Changed
 
-- Reduced native memory-reranking Jaccard similarity passes from quadratic to linear in the selected count ([#16921](https://github.com/can1357/oh-my-pi/pull/16921) by [@GTanger](https://github.com/GTanger))
+- Faster native memory reranking when selecting many results ([#16921](https://github.com/can1357/oh-my-pi/pull/16921) by [@GTanger](https://github.com/GTanger))
 
 ### Fixed
 
