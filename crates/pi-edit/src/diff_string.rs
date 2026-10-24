@@ -1548,25 +1548,76 @@ mod tests {
 	}
 
 	#[test]
-	fn test_normalize_diff_gap_rows() {
-		let mut rows = vec![
-			DIFF_GAP_ROW.to_string(), // leading gap -> removed
-			DIFF_GAP_ROW.to_string(), // consecutive gap -> removed
-			" 1|line 1".to_string(),
-			DIFF_GAP_ROW.to_string(), // contiguous: line 1 to line 2 -> removed
-			" 2|line 2".to_string(),
-			DIFF_GAP_ROW.to_string(), /* non-contiguous: line 2 to line 5 -> kept (becomes empty
-			                           * string) */
-			DIFF_GAP_ROW.to_string(), // consecutive gap -> removed
-			" 5|line 5".to_string(),
-			DIFF_GAP_ROW.to_string(), // trailing gap -> removed
+	fn unified_diff_omits_duplicate_and_boundary_gap_rows() {
+		let old = [
+			"function alpha() {",
+			"  const a1 = 1;",
+			"  const a2 = 2;",
+			"  const a3 = 3;",
+			"  const a4 = 4;",
+			"  return a1;",
+			"}",
+			"// spacer",
+			"function beta() {",
+			"  const b1 = 1;",
+			"  const b2 = 2;",
+			"  const b3 = 3;",
+			"  const b4 = 4;",
+			"  return b1;",
+			"}",
 		];
-		normalize_diff_gap_rows(&mut rows);
-		assert_eq!(rows, vec![
-			" 1|line 1".to_string(),
-			" 2|line 2".to_string(),
-			"".to_string(),
-			" 5|line 5".to_string(),
-		]);
+		let mut new = old;
+		new[1] = "  const a1 = 100;";
+		new[13] = "  return b1 + 1;";
+
+		let result =
+			LineDiff::new(&old.join("\n"), &new.join("\n")).unified(Some(1), &source("sample.ts"));
+		let lines = result.diff.split('\n').collect::<Vec<_>>();
+		let closer = lines.iter().position(|line| *line == " 7|}").unwrap();
+		let opener = lines
+			.iter()
+			.position(|line| *line == " 9|function beta() {")
+			.unwrap();
+		assert!(opener > closer);
+		assert_eq!(lines[closer - 1], "");
+		assert_eq!(lines[closer + 1], "");
+		assert_eq!(lines[opener - 1], "");
+		assert_eq!(lines[opener + 1], "");
+		assert!(!lines.windows(2).any(|pair| pair == ["", ""]));
+		assert_ne!(lines.first(), Some(&""));
+		assert_ne!(lines.last(), Some(&""));
+
+		let contiguous_old = [
+			"function alpha() {",
+			"  const a1 = 1;",
+			"  const a2 = 2;",
+			"  const a3 = 3;",
+			"  const a4 = 4;",
+			"  return a1;",
+			"}",
+			"function beta() {",
+			"  const b1 = 1;",
+			"  const b2 = 2;",
+			"  const b3 = 3;",
+			"  const b4 = 4;",
+			"  return b1;",
+			"}",
+		];
+		let mut contiguous_new = contiguous_old;
+		contiguous_new[1] = "  const a1 = 100;";
+		contiguous_new[12] = "  return b1 + 1;";
+
+		let contiguous_result = LineDiff::new(&contiguous_old.join("\n"), &contiguous_new.join("\n"))
+			.unified(Some(1), &source("sample.ts"));
+		let contiguous_lines = contiguous_result.diff.split('\n').collect::<Vec<_>>();
+		let contiguous_closer = contiguous_lines
+			.iter()
+			.position(|line| *line == " 7|}")
+			.unwrap();
+		let contiguous_opener = contiguous_lines
+			.iter()
+			.position(|line| *line == " 8|function beta() {")
+			.unwrap();
+		assert_eq!(contiguous_opener, contiguous_closer + 1);
 	}
 }
