@@ -97,28 +97,30 @@ fn parse_source_row_line_number(row: &str) -> Option<u32> {
 }
 
 fn normalize_diff_gap_rows(rows: &mut Vec<String>) {
-	let mut kept = Vec::with_capacity(rows.len());
-	for (index, row) in rows.iter().enumerate() {
-		if row != DIFF_GAP_ROW {
-			kept.push(row.clone());
+	let mut write_idx = 0;
+	for read_idx in 0..rows.len() {
+		if rows[read_idx] != DIFF_GAP_ROW {
+			rows.swap(write_idx, read_idx);
+			write_idx += 1;
 			continue;
 		}
-		if kept.is_empty() || kept.last().is_some_and(String::is_empty) {
+		if write_idx == 0 || rows[write_idx - 1].is_empty() {
 			continue;
 		}
-		let before = kept
+		let before = rows[..write_idx]
 			.iter()
 			.rev()
 			.find_map(|candidate| parse_source_row_line_number(candidate));
-		let after = rows[index + 1..]
+		let after = rows[read_idx + 1..]
 			.iter()
 			.filter(|candidate| !candidate.is_empty())
 			.find_map(|candidate| parse_source_row_line_number(candidate));
 		if matches!((before, after), (Some(left), Some(right)) if right > left + 1) {
-			kept.push(String::new());
+			rows[write_idx].clear();
+			write_idx += 1;
 		}
 	}
-	*rows = kept;
+	rows.truncate(write_idx);
 }
 
 fn adjusted_context_insert_index(rows: &[String], index: usize) -> usize {
@@ -1543,5 +1545,28 @@ mod tests {
 			LineDiff::new("a\nb\nc\n", "a\nB\nc\n").unified(Some(1), &BlockContextSource::default());
 		assert_eq!(result.diff, "@@ -1,3 +1,3 @@\n 1|a\n-2|b\n+2|B\n 3|c");
 		assert_eq!(result.first_changed_line, Some(2));
+	}
+
+	#[test]
+	fn test_normalize_diff_gap_rows() {
+		let mut rows = vec![
+			DIFF_GAP_ROW.to_string(), // leading gap -> removed
+			DIFF_GAP_ROW.to_string(), // consecutive gap -> removed
+			" 1|line 1".to_string(),
+			DIFF_GAP_ROW.to_string(), // contiguous: line 1 to line 2 -> removed
+			" 2|line 2".to_string(),
+			DIFF_GAP_ROW.to_string(), /* non-contiguous: line 2 to line 5 -> kept (becomes empty
+			                           * string) */
+			DIFF_GAP_ROW.to_string(), // consecutive gap -> removed
+			" 5|line 5".to_string(),
+			DIFF_GAP_ROW.to_string(), // trailing gap -> removed
+		];
+		normalize_diff_gap_rows(&mut rows);
+		assert_eq!(rows, vec![
+			" 1|line 1".to_string(),
+			" 2|line 2".to_string(),
+			"".to_string(),
+			" 5|line 5".to_string(),
+		]);
 	}
 }
