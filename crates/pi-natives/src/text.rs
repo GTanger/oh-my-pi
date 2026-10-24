@@ -1093,8 +1093,7 @@ impl LineTokens {
 /// Splits a line into wrap tokens: runs of spaces, and runs of visible
 /// graphemes with no break opportunity inside (see [`BreakClass`]).
 struct TokenSplitter {
-	buf:           Vec<u16>,
-	spans:         SmallVec<[std::ops::Range<usize>; 16]>,
+	tokens:        LineTokens,
 	token_start:   usize,
 	pending_ansi:  SmallVec<[u16; 32]>,
 	in_whitespace: bool,
@@ -1105,8 +1104,7 @@ struct TokenSplitter {
 impl TokenSplitter {
 	fn with_capacity(capacity: usize) -> Self {
 		Self {
-			buf:           Vec::with_capacity(capacity),
-			spans:         SmallVec::new(),
+			tokens:        LineTokens { buf: Vec::with_capacity(capacity), spans: SmallVec::new() },
 			token_start:   0,
 			pending_ansi:  SmallVec::new(),
 			in_whitespace: false,
@@ -1122,45 +1120,51 @@ impl TokenSplitter {
 		// waits for it: gluing it to the whitespace token would keep that
 		// space alive past the wrap point and open the style on the line
 		// being broken instead of the one carrying the styled word.
-		if self.buf.len() == self.token_start || self.in_whitespace {
+		if self.tokens.buf.len() == self.token_start || self.in_whitespace {
 			self.pending_ansi.extend_from_slice(seq);
 		} else {
-			self.buf.extend_from_slice(seq);
+			self.tokens.buf.extend_from_slice(seq);
 		}
 	}
 
 	fn push_grapheme(&mut self, grapheme: &[u16], width: usize) {
 		let is_space = grapheme == [b' ' as u16];
 		let class = (!is_space).then(|| BreakClass::of(grapheme, width));
-		if self.buf.len() > self.token_start {
+		if self.tokens.buf.len() > self.token_start {
 			let boundary = match (self.prev, class) {
 				(Some(prev), Some(next)) => prev.breaks_before(next),
 				_ => is_space != self.in_whitespace,
 			};
 			if boundary {
-				self.spans.push(self.token_start..self.buf.len());
-				self.token_start = self.buf.len();
+				self
+					.tokens
+					.spans
+					.push(self.token_start..self.tokens.buf.len());
+				self.token_start = self.tokens.buf.len();
 			}
 		}
 
 		if !self.pending_ansi.is_empty() {
-			self.buf.extend_from_slice(&self.pending_ansi);
+			self.tokens.buf.extend_from_slice(&self.pending_ansi);
 			self.pending_ansi.clear();
 		}
 
 		self.in_whitespace = is_space;
 		self.prev = class;
-		self.buf.extend_from_slice(grapheme);
+		self.tokens.buf.extend_from_slice(grapheme);
 	}
 
 	fn finish(mut self) -> LineTokens {
 		if !self.pending_ansi.is_empty() {
-			self.buf.extend_from_slice(&self.pending_ansi);
+			self.tokens.buf.extend_from_slice(&self.pending_ansi);
 		}
-		if self.buf.len() > self.token_start {
-			self.spans.push(self.token_start..self.buf.len());
+		if self.tokens.buf.len() > self.token_start {
+			self
+				.tokens
+				.spans
+				.push(self.token_start..self.tokens.buf.len());
 		}
-		LineTokens { buf: self.buf, spans: self.spans }
+		self.tokens
 	}
 }
 
