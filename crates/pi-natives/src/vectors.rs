@@ -258,10 +258,6 @@ fn jaccard_sorted(a: &[Box<str>], b: &[Box<str>]) -> f64 {
 /// tokenize to a single non-whitespace word so Jaccard counts still agree
 /// unless a text mixes U+FFFD words with lone-surrogate words.
 #[napi]
-#[allow(
-	clippy::suboptimal_flops,
-	reason = "mul_add rounds differently; bit-exact with the TS loops is the contract"
-)]
 pub fn mmr_rerank_indices(
 	#[napi(ts_arg_type = "Array<string>")] contents: Array,
 	scores: Float64Array,
@@ -283,40 +279,58 @@ pub fn mmr_rerank_indices(
 			.ok_or_else(|| Error::new(Status::InvalidArg, "contents changed during reranking"))?;
 		sets.push(word_set(&js::utf8(content)?));
 	}
+	let selected = mmr_select_indices(&sets, scores.as_ref(), lambda_param, limit);
+	Ok(Uint32Array::new(selected))
+}
+
+#[allow(
+	clippy::suboptimal_flops,
+	reason = "mul_add rounds differently; bit-exact with the TS loops is the contract"
+)]
+pub(crate) fn mmr_select_indices(
+	sets: &[Vec<Box<str>>],
+	scores: &[f64],
+	lambda_param: f64,
+	limit: usize,
+) -> Vec<u32> {
+	let count = sets.len();
+	if limit == 0 || count == 0 {
+		return Vec::new();
+	}
 	let mut selected: Vec<u32> = Vec::with_capacity(limit.min(count));
 	selected.push(0);
-	let mut remaining: Vec<u32> = (1..count as u32).collect();
+	let mut remaining: Vec<(u32, f64)> = (1..count as u32).map(|i| (i, 0.0)).collect();
+	let mut last_picked = 0usize;
 
 	while !remaining.is_empty() && selected.len() < limit {
 		let mut best_idx = 0usize;
 		let mut best_score = f64::NEG_INFINITY;
-		for (idx, &candidate) in remaining.iter().enumerate() {
-			let mut max_similarity = 0.0f64;
-			for &picked in &selected {
-				let similarity = jaccard_sorted(&sets[candidate as usize], &sets[picked as usize]);
-				if similarity > max_similarity {
-					max_similarity = similarity;
-				}
+		for (idx, (candidate, max_similarity)) in remaining.iter_mut().enumerate() {
+			let similarity = jaccard_sorted(&sets[*candidate as usize], &sets[last_picked]);
+			if similarity > *max_similarity {
+				*max_similarity = similarity;
 			}
-			let relevance = scores[candidate as usize];
-			let mmr_score = lambda_param * relevance - (1.0 - lambda_param) * max_similarity;
+			let relevance = scores[*candidate as usize];
+			let mmr_score = lambda_param * relevance - (1.0 - lambda_param) * *max_similarity;
 			if mmr_score > best_score {
 				best_score = mmr_score;
 				best_idx = idx;
 			}
 		}
-		selected.push(remaining.remove(best_idx));
+		let (picked, _) = remaining.remove(best_idx);
+		last_picked = picked as usize;
+		selected.push(picked);
 	}
 	if selected.len() < limit {
-		selected.extend(remaining);
+		selected.extend(remaining.into_iter().map(|(candidate, _)| candidate));
 		selected.truncate(limit);
 	}
-	Ok(Uint32Array::new(selected))
+	selected
 }
 
 #[cfg(test)]
 mod tests {
-	use super::{cosine_one, is_js_whitespace, jaccard_sorted, word_set};
+	use super::{cosine_one, is_js_whitespace, jaccard_sorted, mmr_select_indices, word_set};
 
 	#[test]
 	fn cosine_matches_reference_semantics() {
@@ -346,5 +360,93 @@ mod tests {
 		let sim = jaccard_sorted(&a, &b);
 		assert!((sim - 2.0 / 6.0).abs() < 1e-12);
 		assert_eq!(jaccard_sorted(&a, &word_set("")), 0.0);
+	}
+
+	#[allow(
+		clippy::suboptimal_flops,
+		reason = "mul_add rounds differently; bit-exact with the TS loops is the contract"
+	)]
+	fn reference_mmr_select_indices(
+		sets: &[Vec<Box<str>>],
+		scores: &[f64],
+		lambda_param: f64,
+		limit: usize,
+	) -> Vec<u32> {
+		let count = sets.len();
+		if limit == 0 || count == 0 {
+			return Vec::new();
+		}
+		let mut selected: Vec<u32> = Vec::with_capacity(limit.min(count));
+		selected.push(0);
+		let mut remaining: Vec<u32> = (1..count as u32).collect();
+
+		while !remaining.is_empty() && selected.len() < limit {
+			let mut best_idx = 0usize;
+			let mut best_score = f64::NEG_INFINITY;
+			for (idx, &candidate) in remaining.iter().enumerate() {
+				let mut max_similarity = 0.0f64;
+				for &picked in &selected {
+					let similarity = jaccard_sorted(&sets[candidate as usize], &sets[picked as usize]);
+					if similarity > max_similarity {
+						max_similarity = similarity;
+					}
+				}
+				let relevance = scores[candidate as usize];
+				let mmr_score = lambda_param * relevance - (1.0 - lambda_param) * max_similarity;
+				if mmr_score > best_score {
+					best_score = mmr_score;
+					best_idx = idx;
+				}
+			}
+			selected.push(remaining.remove(best_idx));
+		}
+		if selected.len() < limit {
+			selected.extend(remaining);
+			selected.truncate(limit);
+		}
+		selected
+	}
+
+	#[test]
+	fn mmr_matches_reference_and_handles_edge_cases() {
+		let doc0 = word_set("rust systems programming performance");
+		let doc1 = word_set("rust compiler cargo systems");
+		let doc2 = word_set("python machine learning data science");
+		let doc3 = word_set("python deep learning pytorch");
+		let doc4 = word_set("javascript typescript web frontend");
+		let doc5 = word_set("database sql postgres storage");
+		let sets = vec![doc0, doc1, doc2, doc3, doc4, doc5];
+
+		let scores = vec![0.95, 0.90, 0.85, 0.80, 0.75, 0.70];
+		let lambda = 0.5;
+
+		for limit in 0..=8 {
+			let actual = mmr_select_indices(&sets, &scores, lambda, limit);
+			let expected = reference_mmr_select_indices(&sets, &scores, lambda, limit);
+			assert_eq!(actual, expected, "Failed for limit = {limit}");
+		}
+
+		// Exact tie-breaking: identical scores and similarities should preserve
+		// original order
+		let dup_sets = vec![
+			word_set("apple banana"),
+			word_set("orange grape"),
+			word_set("orange grape"),
+			word_set("orange grape"),
+		];
+		let dup_scores = vec![1.0, 0.5, 0.5, 0.5];
+		assert_eq!(
+			mmr_select_indices(&dup_sets, &dup_scores, 0.5, 3),
+			reference_mmr_select_indices(&dup_sets, &dup_scores, 0.5, 3)
+		);
+
+		// NaN score fallback: NaN comparisons return false (> best_score is
+		// false)
+		let nan_scores = vec![0.9, f64::NAN, 0.8, f64::NAN];
+		let nan_sets = vec![word_set("a b"), word_set("c d"), word_set("e f"), word_set("g h")];
+		assert_eq!(
+			mmr_select_indices(&nan_sets, &nan_scores, 0.5, 4),
+			reference_mmr_select_indices(&nan_sets, &nan_scores, 0.5, 4)
+		);
 	}
 }
