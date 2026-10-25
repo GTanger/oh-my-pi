@@ -256,4 +256,53 @@ describe("PolyphonicRecallEngine", () => {
 			closeQuietly(beam.db);
 		}
 	});
+
+	it("re-scores updated memory_embeddings rows and preserves cached subset across over-capacity scans", () => {
+		const beam = makeBeam();
+		try {
+			const timestamp = new Date().toISOString();
+			const engine = new PolyphonicRecallEngine({
+				db: beam.db,
+				sessionId: beam.sessionId,
+				channelId: beam.channelId,
+			});
+			insertWorking(beam, "wm-mutable", "Mutable vector memory", 0.9, timestamp, beam.sessionId, "session");
+			beam.db.run("INSERT INTO memory_embeddings (memory_id, embedding_json, model) VALUES (?, ?, 'test')", [
+				"wm-mutable",
+				JSON.stringify([1, 0]),
+			]);
+
+			expect(engine.vectorVoice([1, 0]).map(hit => hit.memoryId)).toEqual(["wm-mutable"]);
+
+			// Rewrite the stored embedding to an orthogonal vector; the stale cached entry must be replaced.
+			beam.db.run("UPDATE memory_embeddings SET embedding_json = ? WHERE memory_id = ?", [
+				JSON.stringify([0, 1]),
+				"wm-mutable",
+			]);
+			expect(engine.vectorVoice([1, 0])).toEqual([]);
+			expect(engine.vectorVoice([0, 1]).map(hit => hit.memoryId)).toEqual(["wm-mutable"]);
+
+			// Insert 10,000 more rows (10,001 total) so the scan exceeds the 10,000-entry cache cap.
+			beam.db.exec("BEGIN");
+			const insertWm = beam.db.prepare(
+				`INSERT INTO working_memory (id, content, source, timestamp, importance, session_id, scope, channel_id)
+				 VALUES (?, 'bulk', 'test', ?, 0.5, ?, 'session', ?)`,
+			);
+			const insertEmb = beam.db.prepare(
+				"INSERT INTO memory_embeddings (memory_id, embedding_json, model) VALUES (?, ?, 'test')",
+			);
+			for (let i = 0; i < 10_000; i++) {
+				const id = `wm-bulk-${i}`;
+				insertWm.run(id, timestamp, beam.sessionId, beam.channelId);
+				insertEmb.run(id, JSON.stringify([1, i * 0.0001]));
+			}
+			beam.db.exec("COMMIT");
+
+			const firstHits = engine.vectorVoice([1, 0]);
+			const secondHits = engine.vectorVoice([1, 0]);
+			expect(secondHits).toEqual(firstHits);
+		} finally {
+			closeQuietly(beam.db);
+		}
+	});
 });

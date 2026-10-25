@@ -1,7 +1,8 @@
 import type { Database } from "bun:sqlite";
 import { logger, withLoopPhase } from "@oh-my-pi/pi-utils";
+import { LRUCache } from "@oh-my-pi/pi-utils/lru";
 import { type Env, polyphonicRecallEnabled } from "../config";
-import { closeQuietly, type DatabasePath, openDatabase } from "../db";
+import { closeQuietly, type DatabasePath, onDatabaseClose, openDatabase } from "../db";
 import { backfillConsolidatedFacts, ensureVeracityConsolidator } from "./beam/consolidate";
 import type { BeamMemoryState, JsonValue, Metadata, RecallResult, RecallTierLabel } from "./beam/types";
 import { EpisodicGraph, extractProperNouns } from "./episodic-graph";
@@ -198,57 +199,93 @@ function normalizeVector(vector: readonly number[] | Float32Array): Float32Array
 	return out;
 }
 
-interface ParsedEmbedding {
+interface CachedEmbedding {
+	readonly rawJson: string;
 	readonly values: Float64Array;
 	readonly norm: number;
+	readonly byteSize: number;
 }
 
-const MAX_EMBEDDING_PARSE_CACHE = 10_000;
-const embeddingParseCache = new Map<string, ParsedEmbedding | null>();
+const MAX_EMBEDDING_CACHE_ENTRIES = 10_000;
+const MAX_EMBEDDING_CACHE_BYTES = 16 * 1024 * 1024;
+const embeddingCachesByDb = new WeakMap<Database, LRUCache<string, CachedEmbedding>>();
 
-function cacheParsedEmbedding(rawJson: string, parsed: ParsedEmbedding | null): ParsedEmbedding | null {
-	if (embeddingParseCache.size >= MAX_EMBEDDING_PARSE_CACHE) {
-		const oldest = embeddingParseCache.keys().next().value;
-		if (oldest !== undefined) embeddingParseCache.delete(oldest);
+function getEmbeddingCache(db: Database): LRUCache<string, CachedEmbedding> {
+	let cache = embeddingCachesByDb.get(db);
+	if (cache === undefined) {
+		const created = new LRUCache<string, CachedEmbedding>({
+			max: MAX_EMBEDDING_CACHE_ENTRIES,
+			maxSize: MAX_EMBEDDING_CACHE_BYTES,
+			sizeCalculation: entry => entry.byteSize,
+		});
+		embeddingCachesByDb.set(db, created);
+		onDatabaseClose(db, () => {
+			created.clear();
+			embeddingCachesByDb.delete(db);
+		});
+		cache = created;
 	}
-	embeddingParseCache.set(rawJson, parsed);
-	return parsed;
+	return cache;
 }
 
-function parseEmbeddingJson(rawJson: string): ParsedEmbedding | null {
-	if (embeddingParseCache.has(rawJson)) {
-		return embeddingParseCache.get(rawJson) ?? null;
+function cosineAgainstRow(
+	cache: LRUCache<string, CachedEmbedding>,
+	unit: Float32Array,
+	row: EmbeddingRow,
+): number | null {
+	const cached = cache.peek(row.memory_id);
+	if (cached !== undefined) {
+		if (cached.rawJson === row.embedding_json) {
+			const { values, norm } = cached;
+			if (values.length !== unit.length || norm === 0) return null;
+			let dot = 0;
+			for (let i = 0; i < values.length; i++) {
+				dot += (unit[i] as number) * (values[i] as number);
+			}
+			return dot / norm;
+		}
+		cache.delete(row.memory_id);
 	}
+
 	let raw: unknown;
 	try {
-		raw = JSON.parse(rawJson) as unknown;
+		raw = JSON.parse(row.embedding_json) as unknown;
 	} catch {
-		return cacheParsedEmbedding(rawJson, null);
+		return null;
 	}
-	if (!Array.isArray(raw) || raw.length === 0) {
-		return cacheParsedEmbedding(rawJson, null);
+	if (!Array.isArray(raw) || raw.length !== unit.length) return null;
+
+	const byteSize = row.memory_id.length * 2 + row.embedding_json.length * 2 + raw.length * 8 + 64;
+	const canAdmit =
+		cache.size < MAX_EMBEDDING_CACHE_ENTRIES && cache.calculatedSize + byteSize <= MAX_EMBEDDING_CACHE_BYTES;
+
+	if (canAdmit) {
+		const values = new Float64Array(raw.length);
+		let normSq = 0;
+		let dot = 0;
+		for (let i = 0; i < raw.length; i++) {
+			const value = raw[i];
+			if (typeof value !== "number" || !Number.isFinite(value)) return null;
+			values[i] = value;
+			normSq += value * value;
+			dot += (unit[i] as number) * value;
+		}
+		if (normSq === 0) return null;
+		const norm = Math.sqrt(normSq);
+		cache.set(row.memory_id, { rawJson: row.embedding_json, values, norm, byteSize });
+		return dot / norm;
 	}
-	const values = new Float64Array(raw.length);
+
 	let normSq = 0;
+	let dot = 0;
 	for (let i = 0; i < raw.length; i++) {
 		const value = raw[i];
-		if (typeof value !== "number" || !Number.isFinite(value)) {
-			return cacheParsedEmbedding(rawJson, null);
-		}
-		values[i] = value;
+		if (typeof value !== "number" || !Number.isFinite(value)) return null;
 		normSq += value * value;
+		dot += (unit[i] as number) * value;
 	}
-	return cacheParsedEmbedding(rawJson, normSq === 0 ? null : { values, norm: Math.sqrt(normSq) });
-}
-
-function cosineAgainstUnit(unit: Float32Array, parsed: ParsedEmbedding): number | null {
-	const { values, norm } = parsed;
-	if (values.length !== unit.length) return null;
-	let dot = 0;
-	for (let i = 0; i < values.length; i++) {
-		dot += (unit[i] as number) * (values[i] as number);
-	}
-	return dot / norm;
+	if (normSq === 0) return null;
+	return dot / Math.sqrt(normSq);
 }
 
 function queryTokens(query: string): string[] {
@@ -405,11 +442,10 @@ export class PolyphonicRecallEngine {
 			return [];
 		}
 
+		const cache = getEmbeddingCache(this.db);
 		const byId = new Map<string, VoiceRecallResult>();
 		for (const row of rows) {
-			const parsed = parseEmbeddingJson(row.embedding_json);
-			if (parsed === null) continue;
-			const cosine = cosineAgainstUnit(queryUnit, parsed);
+			const cosine = cosineAgainstRow(cache, queryUnit, row);
 			if (cosine === null || cosine < VECTOR_VOICE_MIN_COSINE) continue;
 			const similarity = (cosine + 1) / 2;
 			const existing = byId.get(row.memory_id);
@@ -649,6 +685,11 @@ export class PolyphonicRecallEngine {
 		};
 	}
 	close(): void {
+		const cache = embeddingCachesByDb.get(this.db);
+		if (cache !== undefined) {
+			cache.clear();
+			embeddingCachesByDb.delete(this.db);
+		}
 		if (this.ownsConnection) closeQuietly(this.db);
 	}
 
