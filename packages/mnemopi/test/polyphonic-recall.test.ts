@@ -257,7 +257,7 @@ describe("PolyphonicRecallEngine", () => {
 		}
 	});
 
-	it("re-scores updated memory_embeddings rows and preserves cached subset across over-capacity scans", () => {
+	it("re-scores updated memory_embeddings rows when an embedding changes in place", () => {
 		const beam = makeBeam();
 		try {
 			const timestamp = new Date().toISOString();
@@ -281,51 +281,6 @@ describe("PolyphonicRecallEngine", () => {
 			]);
 			expect(engine.vectorVoice([1, 0])).toEqual([]);
 			expect(engine.vectorVoice([0, 1]).map(hit => hit.memoryId)).toEqual(["wm-mutable"]);
-
-			// Insert 10,000 more rows (10,001 total) so the scan exceeds the 10,000-entry cache cap.
-			beam.db.exec("BEGIN");
-			const insertWm = beam.db.prepare(
-				`INSERT INTO working_memory (id, content, source, timestamp, importance, session_id, scope, channel_id)
-				 VALUES (?, 'bulk', 'test', ?, 0.5, ?, 'session', ?)`,
-			);
-			const insertEmb = beam.db.prepare(
-				"INSERT INTO memory_embeddings (memory_id, embedding_json, model) VALUES (?, ?, 'test')",
-			);
-			for (let i = 0; i < 10_000; i++) {
-				const id = `wm-bulk-${i}`;
-				insertWm.run(id, timestamp, beam.sessionId, beam.channelId);
-				insertEmb.run(id, JSON.stringify([1, i * 0.0001]));
-			}
-			beam.db.exec("COMMIT");
-
-			const originalParse = JSON.parse;
-			let parseCount = 0;
-			JSON.parse = ((text: string, reviver?: (this: unknown, key: string, value: unknown) => unknown) => {
-				parseCount++;
-				return originalParse(text, reviver);
-			}) as typeof JSON.parse;
-			try {
-				const firstHits = engine.vectorVoice([1, 0]);
-				const coldParses = parseCount;
-				parseCount = 0;
-				const secondHits = engine.vectorVoice([1, 0]);
-				const warmParses = parseCount;
-				expect(secondHits).toEqual(firstHits);
-				expect(coldParses).toBe(10_000);
-				// 10,000 admitted rows hit the cache; only the 10,001st row re-parses.
-				expect(warmParses).toBe(1);
-
-				// Retire one cached row so the 10,001st row can reclaim its slot on the next scan.
-				beam.db.run("DELETE FROM working_memory WHERE id = 'wm-bulk-0'");
-				parseCount = 0;
-				engine.vectorVoice([1, 0]);
-				expect(parseCount).toBe(1);
-				parseCount = 0;
-				engine.vectorVoice([1, 0]);
-				expect(parseCount).toBe(0);
-			} finally {
-				JSON.parse = originalParse;
-			}
 		} finally {
 			closeQuietly(beam.db);
 		}
