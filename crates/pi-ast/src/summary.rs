@@ -1,6 +1,6 @@
 //! Structural source summaries powered by tree-sitter.
 
-use std::{collections::BTreeSet, path::Path};
+use std::path::Path;
 
 use anyhow::Result;
 use serde::{Deserialize, Serialize};
@@ -839,10 +839,11 @@ fn normalize_spans(mut spans: Vec<LineSpan>, total_lines: u32) -> Vec<LineSpan> 
 	if total_lines == 0 {
 		return Vec::new();
 	}
-	spans.retain(|span| span.start <= span.end && span.start <= total_lines);
 	for span in &mut spans {
+		span.start = span.start.max(1);
 		span.end = span.end.min(total_lines);
 	}
+	spans.retain(|span| span.start <= span.end && span.start <= total_lines);
 	spans.sort_by_key(|span| (span.start, span.end));
 	let mut merged: Vec<LineSpan> = Vec::new();
 	for span in spans {
@@ -862,55 +863,64 @@ fn build_segments(source: &str, total_lines: u32, spans: &[LineSpan]) -> Vec<Sum
 		return Vec::new();
 	}
 	let source_lines: Vec<&str> = source.lines().collect();
-	let elided_lines = spans
-		.iter()
-		.flat_map(|span| span.start..=span.end)
-		.collect::<BTreeSet<_>>();
-	let mut segments = Vec::new();
-	let mut current_kind: Option<&str> = None;
-	let mut current_start = 1;
-	let mut current_lines: Vec<&str> = Vec::new();
+	let mut segments = Vec::with_capacity(spans.len().saturating_mul(2).saturating_add(1));
+	let mut cursor = 1;
 
-	for line_number in 1..=total_lines {
-		let is_elided = elided_lines.contains(&line_number);
-		let kind = if is_elided { "elided" } else { "kept" };
-		if current_kind.is_some_and(|existing| existing != kind) {
-			push_segment(
-				&mut segments,
-				current_kind.expect("kind set"),
-				current_start,
-				line_number - 1,
-				&current_lines,
-			);
-			current_start = line_number;
-			current_lines.clear();
+	for span in spans {
+		let span_start = span.start.max(1);
+		let span_end = span.end.min(total_lines);
+		if span_start > span_end || span_start > total_lines {
+			continue;
 		}
-		current_kind = Some(kind);
-		if !is_elided {
-			let index = line_number.saturating_sub(1) as usize;
-			current_lines.push(source_lines.get(index).copied().unwrap_or_default());
+
+		if cursor < span_start {
+			let end_line = span_start - 1;
+			segments.push(SummarySegment {
+				kind: "kept".to_string(),
+				start_line: cursor,
+				end_line,
+				text: Some(join_line_range(&source_lines, cursor, end_line)),
+			});
 		}
+
+		segments.push(SummarySegment {
+			kind:       "elided".to_string(),
+			start_line: span_start,
+			end_line:   span_end,
+			text:       None,
+		});
+
+		cursor = span_end.saturating_add(1);
 	}
 
-	if let Some(kind) = current_kind {
-		push_segment(&mut segments, kind, current_start, total_lines, &current_lines);
+	if cursor <= total_lines {
+		segments.push(SummarySegment {
+			kind:       "kept".to_string(),
+			start_line: cursor,
+			end_line:   total_lines,
+			text:       Some(join_line_range(&source_lines, cursor, total_lines)),
+		});
 	}
+
 	segments
 }
 
-fn push_segment(
-	segments: &mut Vec<SummarySegment>,
-	kind: &str,
-	start_line: u32,
-	end_line: u32,
-	lines: &[&str],
-) {
-	segments.push(SummarySegment {
-		kind: kind.to_string(),
-		start_line,
-		end_line,
-		text: (kind == "kept").then(|| lines.join("\n")),
-	});
+fn join_line_range(source_lines: &[&str], start_line: u32, end_line: u32) -> String {
+	let start_idx = start_line.saturating_sub(1) as usize;
+	let end_idx = end_line as usize;
+	if end_idx <= source_lines.len() {
+		source_lines[start_idx..end_idx].join("\n")
+	} else {
+		(start_line..=end_line)
+			.map(|line| {
+				source_lines
+					.get(line.saturating_sub(1) as usize)
+					.copied()
+					.unwrap_or_default()
+			})
+			.collect::<Vec<_>>()
+			.join("\n")
+	}
 }
 
 #[cfg(test)]
