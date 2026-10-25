@@ -215,15 +215,28 @@ describe("parseJsonlLenient", () => {
 		expect(result).toEqual([{ x: 42 }]);
 	});
 
-	it("notifies onMalformedRecord once per malformed line across blank lines and valid records", () => {
+	it("notifies onMalformedRecord once per malformed line and ignores ASCII or Unicode whitespace-only lines", () => {
 		let malformed = 0;
-		const result = parseJsonlLenient<{ a: number }>('{"a":1}\n\n  {bad 1}\n{"a":2}\n{bad 2}', {
-			onMalformedRecord: () => {
-				malformed++;
+		const result = parseJsonlLenient<{ a: number }>(
+			'{"a":1}\n\n\u00a0\n  {bad 1}\n{"a":2}\n{bad 2}\n\u00a0',
+			{
+				onMalformedRecord: () => {
+					malformed++;
+				},
 			},
-		});
+		);
 		expect(result).toEqual([{ a: 1 }, { a: 2 }]);
 		expect(malformed).toBe(2);
+
+		let unicodeOnlyMalformed = 0;
+		expect(
+			parseJsonlLenient("\u00a0", {
+				onMalformedRecord: () => {
+					unicodeOnlyMalformed++;
+				},
+			}),
+		).toEqual([]);
+		expect(unicodeOnlyMalformed).toBe(0);
 	});
 });
 

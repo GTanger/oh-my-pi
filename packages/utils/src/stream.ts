@@ -2,6 +2,7 @@ const trailingEvents = new WeakSet<ServerSentEvent>();
 
 import { abortableSource } from "./abortable";
 import { parseStreamingJson } from "./json-parse";
+import { isWhitespace } from "./json-lexer";
 
 const LF = 0x0a;
 const CR = 0x0d;
@@ -628,26 +629,18 @@ export function parseJsonlLenient<T>(buffer: string, options: { onMalformedRecor
 		}
 		if (error) {
 			let malformedStart = read;
-			while (malformedStart < len) {
-				const code = buffer.charCodeAt(malformedStart);
-				if (code !== 32 && code !== 9 && code !== 10 && code !== 13) break;
+			while (malformedStart < len && isWhitespace(buffer.charCodeAt(malformedStart))) {
 				malformedStart++;
 			}
 			const nextNewline = buffer.indexOf("\n", malformedStart);
 			const malformedEnd = nextNewline === -1 ? len : nextNewline;
-			if (malformedStart < malformedEnd) options.onMalformedRecord?.();
+			if (buffer.substring(malformedStart, malformedEnd).trim().length > 0) options.onMalformedRecord?.();
 			if (nextNewline === -1) break;
 			cursor = nextNewline + 1;
 			continue;
 		}
 		if (read === cursor) {
-			let nonWs = cursor;
-			while (nonWs < len) {
-				const code = buffer.charCodeAt(nonWs);
-				if (code !== 32 && code !== 9 && code !== 10 && code !== 13) break;
-				nonWs++;
-			}
-			if (nonWs < len) options.onMalformedRecord?.();
+			if (buffer.substring(cursor).trim().length > 0) options.onMalformedRecord?.();
 			break;
 		}
 		cursor = read;
