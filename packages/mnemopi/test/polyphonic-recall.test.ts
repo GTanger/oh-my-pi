@@ -298,9 +298,34 @@ describe("PolyphonicRecallEngine", () => {
 			}
 			beam.db.exec("COMMIT");
 
-			const firstHits = engine.vectorVoice([1, 0]);
-			const secondHits = engine.vectorVoice([1, 0]);
-			expect(secondHits).toEqual(firstHits);
+			const originalParse = JSON.parse;
+			let parseCount = 0;
+			JSON.parse = ((text: string, reviver?: (this: unknown, key: string, value: unknown) => unknown) => {
+				parseCount++;
+				return originalParse(text, reviver);
+			}) as typeof JSON.parse;
+			try {
+				const firstHits = engine.vectorVoice([1, 0]);
+				const coldParses = parseCount;
+				parseCount = 0;
+				const secondHits = engine.vectorVoice([1, 0]);
+				const warmParses = parseCount;
+				expect(secondHits).toEqual(firstHits);
+				expect(coldParses).toBe(10_000);
+				// 10,000 admitted rows hit the cache; only the 10,001st row re-parses.
+				expect(warmParses).toBe(1);
+
+				// Retire one cached row so the 10,001st row can reclaim its slot on the next scan.
+				beam.db.run("DELETE FROM working_memory WHERE id = 'wm-bulk-0'");
+				parseCount = 0;
+				engine.vectorVoice([1, 0]);
+				expect(parseCount).toBe(1);
+				parseCount = 0;
+				engine.vectorVoice([1, 0]);
+				expect(parseCount).toBe(0);
+			} finally {
+				JSON.parse = originalParse;
+			}
 		} finally {
 			closeQuietly(beam.db);
 		}

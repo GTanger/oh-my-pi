@@ -228,10 +228,25 @@ function getEmbeddingCache(db: Database): LRUCache<string, CachedEmbedding> {
 	return cache;
 }
 
+function reclaimDepartedCacheSlots(
+	cache: LRUCache<string, CachedEmbedding>,
+	rows: readonly EmbeddingRow[],
+): void {
+	const activeIds = new Set<string>();
+	for (const row of rows) activeIds.add(row.memory_id);
+	for (const cachedId of cache.keys()) {
+		if (!activeIds.has(cachedId)) {
+			cache.delete(cachedId);
+		}
+	}
+}
+
 function cosineAgainstRow(
 	cache: LRUCache<string, CachedEmbedding>,
 	unit: Float32Array,
 	row: EmbeddingRow,
+	rows: readonly EmbeddingRow[],
+	state: { sweptDeparted: boolean },
 ): number | null {
 	const cached = cache.peek(row.memory_id);
 	if (cached !== undefined) {
@@ -256,8 +271,14 @@ function cosineAgainstRow(
 	if (!Array.isArray(raw) || raw.length !== unit.length) return null;
 
 	const byteSize = row.memory_id.length * 2 + row.embedding_json.length * 2 + raw.length * 8 + 64;
-	const canAdmit =
+	let canAdmit =
 		cache.size < MAX_EMBEDDING_CACHE_ENTRIES && cache.calculatedSize + byteSize <= MAX_EMBEDDING_CACHE_BYTES;
+	if (!canAdmit && !state.sweptDeparted) {
+		state.sweptDeparted = true;
+		reclaimDepartedCacheSlots(cache, rows);
+		canAdmit =
+			cache.size < MAX_EMBEDDING_CACHE_ENTRIES && cache.calculatedSize + byteSize <= MAX_EMBEDDING_CACHE_BYTES;
+	}
 
 	if (canAdmit) {
 		const values = new Float64Array(raw.length);
@@ -287,7 +308,6 @@ function cosineAgainstRow(
 	if (normSq === 0) return null;
 	return dot / Math.sqrt(normSq);
 }
-
 function queryTokens(query: string): string[] {
 	const tokens: string[] = [];
 	for (const match of query.toLowerCase().matchAll(/[\p{L}\p{N}_-]+/gu)) tokens.push(match[0]);
@@ -443,9 +463,10 @@ export class PolyphonicRecallEngine {
 		}
 
 		const cache = getEmbeddingCache(this.db);
+		const scanState = { sweptDeparted: false };
 		const byId = new Map<string, VoiceRecallResult>();
 		for (const row of rows) {
-			const cosine = cosineAgainstRow(cache, queryUnit, row);
+			const cosine = cosineAgainstRow(cache, queryUnit, row, rows, scanState);
 			if (cosine === null || cosine < VECTOR_VOICE_MIN_COSINE) continue;
 			const similarity = (cosine + 1) / 2;
 			const existing = byId.get(row.memory_id);
