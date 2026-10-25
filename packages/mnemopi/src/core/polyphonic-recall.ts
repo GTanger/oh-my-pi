@@ -228,37 +228,48 @@ function getEmbeddingCache(db: Database): LRUCache<string, CachedEmbedding> {
 	return cache;
 }
 
+const RECLAIM_BATCH_SIZE = 400;
+
 function reclaimDepartedCacheSlots(
 	db: Database,
 	cache: LRUCache<string, CachedEmbedding>,
+	rows: readonly EmbeddingRow[],
 	now: string,
 ): void {
-	let liveRows: Array<{ memory_id: string }>;
-	try {
-		liveRows = db
-			.query(`
-				SELECT me.memory_id
-				FROM memory_embeddings me
-				JOIN working_memory wm ON wm.id = me.memory_id
-				WHERE wm.superseded_by IS NULL
-					AND (wm.valid_until IS NULL OR wm.valid_until > ?)
-				UNION ALL
-				SELECT me.memory_id
-				FROM memory_embeddings me
-				JOIN episodic_memory em ON em.id = me.memory_id
-				WHERE em.superseded_by IS NULL
-					AND (em.valid_until IS NULL OR em.valid_until > ?)
-			`)
-			.all(now, now) as Array<{ memory_id: string }>;
-	} catch {
-		return;
+	const suspectIds = new Set<string>(cache.keys());
+	for (const row of rows) {
+		suspectIds.delete(row.memory_id);
+		if (suspectIds.size === 0) return;
 	}
-	const liveIds = new Set<string>();
-	for (const row of liveRows) liveIds.add(row.memory_id);
-	for (const cachedId of cache.keys()) {
-		if (!liveIds.has(cachedId)) {
-			cache.delete(cachedId);
+	const candidates = [...suspectIds];
+	for (let offset = 0; offset < candidates.length; offset += RECLAIM_BATCH_SIZE) {
+		const batch = candidates.slice(offset, offset + RECLAIM_BATCH_SIZE);
+		const placeholders = batch.map(() => "?").join(", ");
+		try {
+			const liveRows = db
+				.query(`
+					SELECT me.memory_id
+					FROM memory_embeddings me
+					JOIN working_memory wm ON wm.id = me.memory_id
+					WHERE me.memory_id IN (${placeholders})
+						AND wm.superseded_by IS NULL
+						AND (wm.valid_until IS NULL OR wm.valid_until > ?)
+					UNION ALL
+					SELECT me.memory_id
+					FROM memory_embeddings me
+					JOIN episodic_memory em ON em.id = me.memory_id
+					WHERE me.memory_id IN (${placeholders})
+						AND em.superseded_by IS NULL
+						AND (em.valid_until IS NULL OR em.valid_until > ?)
+				`)
+				.all(...batch, now, ...batch, now) as Array<{ memory_id: string }>;
+			for (const row of liveRows) suspectIds.delete(row.memory_id);
+		} catch {
+			return;
 		}
+	}
+	for (const departedId of suspectIds) {
+		cache.delete(departedId);
 	}
 }
 
@@ -267,6 +278,7 @@ function cosineAgainstRow(
 	cache: LRUCache<string, CachedEmbedding>,
 	unit: Float32Array,
 	row: EmbeddingRow,
+	rows: readonly EmbeddingRow[],
 	now: string,
 	state: { sweptDeparted: boolean },
 ): number | null {
@@ -297,7 +309,7 @@ function cosineAgainstRow(
 		cache.size < MAX_EMBEDDING_CACHE_ENTRIES && cache.calculatedSize + byteSize <= MAX_EMBEDDING_CACHE_BYTES;
 	if (!canAdmit && !state.sweptDeparted) {
 		state.sweptDeparted = true;
-		reclaimDepartedCacheSlots(db, cache, now);
+		reclaimDepartedCacheSlots(db, cache, rows, now);
 		canAdmit =
 			cache.size < MAX_EMBEDDING_CACHE_ENTRIES && cache.calculatedSize + byteSize <= MAX_EMBEDDING_CACHE_BYTES;
 	}
@@ -488,7 +500,7 @@ export class PolyphonicRecallEngine {
 		const scanState = { sweptDeparted: false };
 		const byId = new Map<string, VoiceRecallResult>();
 		for (const row of rows) {
-			const cosine = cosineAgainstRow(this.db, cache, queryUnit, row, now, scanState);
+			const cosine = cosineAgainstRow(this.db, cache, queryUnit, row, rows, now, scanState);
 			if (cosine === null || cosine < VECTOR_VOICE_MIN_COSINE) continue;
 			const similarity = (cosine + 1) / 2;
 			const existing = byId.get(row.memory_id);
