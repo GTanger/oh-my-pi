@@ -198,20 +198,57 @@ function normalizeVector(vector: readonly number[] | Float32Array): Float32Array
 	return out;
 }
 
-function cosineAgainstUnit(unit: Float32Array, raw: unknown): number | null {
-	if (!Array.isArray(raw) || raw.length !== unit.length) return null;
+interface ParsedEmbedding {
+	readonly values: Float64Array;
+	readonly norm: number;
+}
+
+const MAX_EMBEDDING_PARSE_CACHE = 10_000;
+const embeddingParseCache = new Map<string, ParsedEmbedding | null>();
+
+function cacheParsedEmbedding(rawJson: string, parsed: ParsedEmbedding | null): ParsedEmbedding | null {
+	if (embeddingParseCache.size >= MAX_EMBEDDING_PARSE_CACHE) {
+		const oldest = embeddingParseCache.keys().next().value;
+		if (oldest !== undefined) embeddingParseCache.delete(oldest);
+	}
+	embeddingParseCache.set(rawJson, parsed);
+	return parsed;
+}
+
+function parseEmbeddingJson(rawJson: string): ParsedEmbedding | null {
+	if (embeddingParseCache.has(rawJson)) {
+		return embeddingParseCache.get(rawJson) ?? null;
+	}
+	let raw: unknown;
+	try {
+		raw = JSON.parse(rawJson) as unknown;
+	} catch {
+		return cacheParsedEmbedding(rawJson, null);
+	}
+	if (!Array.isArray(raw) || raw.length === 0) {
+		return cacheParsedEmbedding(rawJson, null);
+	}
+	const values = new Float64Array(raw.length);
 	let normSq = 0;
-	let dot = 0;
 	for (let i = 0; i < raw.length; i++) {
 		const value = raw[i];
-		if (typeof value !== "number" || !Number.isFinite(value)) return null;
+		if (typeof value !== "number" || !Number.isFinite(value)) {
+			return cacheParsedEmbedding(rawJson, null);
+		}
+		values[i] = value;
 		normSq += value * value;
-		const unitValue = unit[i];
-		if (unitValue === undefined) return null;
-		dot += unitValue * value;
 	}
-	if (normSq === 0) return null;
-	return dot / Math.sqrt(normSq);
+	return cacheParsedEmbedding(rawJson, normSq === 0 ? null : { values, norm: Math.sqrt(normSq) });
+}
+
+function cosineAgainstUnit(unit: Float32Array, parsed: ParsedEmbedding): number | null {
+	const { values, norm } = parsed;
+	if (values.length !== unit.length) return null;
+	let dot = 0;
+	for (let i = 0; i < values.length; i++) {
+		dot += (unit[i] as number) * (values[i] as number);
+	}
+	return dot / norm;
 }
 
 function queryTokens(query: string): string[] {
@@ -370,12 +407,8 @@ export class PolyphonicRecallEngine {
 
 		const byId = new Map<string, VoiceRecallResult>();
 		for (const row of rows) {
-			let parsed: unknown;
-			try {
-				parsed = JSON.parse(row.embedding_json) as unknown;
-			} catch {
-				continue;
-			}
+			const parsed = parseEmbeddingJson(row.embedding_json);
+			if (parsed === null) continue;
 			const cosine = cosineAgainstUnit(queryUnit, parsed);
 			if (cosine === null || cosine < VECTOR_VOICE_MIN_COSINE) continue;
 			const similarity = (cosine + 1) / 2;
