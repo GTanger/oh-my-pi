@@ -840,7 +840,6 @@ fn normalize_spans(mut spans: Vec<LineSpan>, total_lines: u32) -> Vec<LineSpan> 
 		return Vec::new();
 	}
 	for span in &mut spans {
-		span.start = span.start.max(1);
 		span.end = span.end.min(total_lines);
 	}
 	spans.retain(|span| span.start <= span.end && span.start <= total_lines);
@@ -867,30 +866,26 @@ fn build_segments(source: &str, total_lines: u32, spans: &[LineSpan]) -> Vec<Sum
 	let mut cursor = 1;
 
 	for span in spans {
-		let span_start = span.start.max(1);
-		let span_end = span.end.min(total_lines);
-		if span_start > span_end || span_start > total_lines {
-			continue;
-		}
+		debug_assert!(cursor <= span.start && span.start <= span.end && span.end <= total_lines);
 
-		if cursor < span_start {
-			let end_line = span_start - 1;
+		if cursor < span.start {
+			let end_line = span.start - 1;
 			segments.push(SummarySegment {
-				kind: "kept".to_string(),
+				kind:       "kept".to_string(),
 				start_line: cursor,
 				end_line,
-				text: Some(join_line_range(&source_lines, cursor, end_line)),
+				text:       Some(join_line_range(&source_lines, cursor, end_line)),
 			});
 		}
 
 		segments.push(SummarySegment {
 			kind:       "elided".to_string(),
-			start_line: span_start,
-			end_line:   span_end,
+			start_line: span.start,
+			end_line:   span.end,
 			text:       None,
 		});
 
-		cursor = span_end.saturating_add(1);
+		cursor = span.end.saturating_add(1);
 	}
 
 	if cursor <= total_lines {
@@ -906,21 +901,8 @@ fn build_segments(source: &str, total_lines: u32, spans: &[LineSpan]) -> Vec<Sum
 }
 
 fn join_line_range(source_lines: &[&str], start_line: u32, end_line: u32) -> String {
-	let start_idx = start_line.saturating_sub(1) as usize;
-	let end_idx = end_line as usize;
-	if end_idx <= source_lines.len() {
-		source_lines[start_idx..end_idx].join("\n")
-	} else {
-		(start_line..=end_line)
-			.map(|line| {
-				source_lines
-					.get(line.saturating_sub(1) as usize)
-					.copied()
-					.unwrap_or_default()
-			})
-			.collect::<Vec<_>>()
-			.join("\n")
-	}
+	debug_assert!(end_line as usize <= source_lines.len());
+	source_lines[start_line as usize - 1..end_line as usize].join("\n")
 }
 
 #[cfg(test)]
@@ -1419,5 +1401,55 @@ mod tests {
 		// The <style> raw text stays folded as one elided span — no CSS interior
 		// leaks into kept content.
 		assert!(!kept_text.contains(".rule0 {"), "oversized style body must stay folded");
+	}
+
+	#[test]
+	fn summarizes_crlf_and_boundary_spans_without_trailing_newline() {
+		let crlf_code = [
+			"/* header comment 1",
+			" * header comment 2",
+			" * header comment 3",
+			" * header comment 4",
+			" * header comment 5",
+			" */",
+			"use std::collections::HashMap;",
+			"use std::collections::HashSet;",
+			"use std::fmt;",
+			"use std::io;",
+			"pub fn run() {",
+			"\tlet a = 1;",
+			"\tlet b = 2;",
+			"\tlet c = a + b;",
+			"\tprintln!(\"{c}\");",
+			"}",
+		]
+		.join("\r\n");
+
+		let result = summarize(&crlf_code, "fixture.rs");
+		assert!(result.parsed);
+		assert!(result.elided);
+		assert_eq!(result.total_lines, 16);
+		assert_eq!(
+			segment_kinds(&result),
+			vec!["kept", "elided", "kept", "elided", "kept", "elided", "kept"]
+		);
+		assert_eq!(result.segments[0].start_line, 1);
+		assert_eq!(result.segments[0].end_line, 2);
+		assert_eq!(
+			result.segments[0].text.as_deref(),
+			Some("/* header comment 1\n * header comment 2")
+		);
+		assert_eq!(result.segments[1].start_line, 3);
+		assert_eq!(result.segments[1].end_line, 5);
+		assert_eq!(
+			result.segments[2].text.as_deref(),
+			Some(" */\nuse std::collections::HashMap;")
+		);
+		assert_eq!(result.segments[3].start_line, 8);
+		assert_eq!(result.segments[3].end_line, 9);
+		assert_eq!(result.segments[4].text.as_deref(), Some("use std::io;\npub fn run() {"));
+		assert_eq!(result.segments[5].start_line, 12);
+		assert_eq!(result.segments[5].end_line, 15);
+		assert_eq!(result.segments[6].text.as_deref(), Some("}"));
 	}
 }
