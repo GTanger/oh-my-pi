@@ -2,6 +2,10 @@
 
 ## [Unreleased]
 
+### Changed
+
+- Faster lenient JSONL session parsing when recovering past malformed lines ([#16995](https://github.com/can1357/oh-my-pi/pull/16995) by [@GTanger](https://github.com/GTanger))
+
 ## [18.12.6] - 2026-10-21
 
 ### Added

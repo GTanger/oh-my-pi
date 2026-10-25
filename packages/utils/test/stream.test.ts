@@ -214,6 +214,17 @@ describe("parseJsonlLenient", () => {
 		const result = parseJsonlLenient<{ x: number }>('{"x":42}');
 		expect(result).toEqual([{ x: 42 }]);
 	});
+
+	it("notifies onMalformedRecord once per malformed line across blank lines and valid records", () => {
+		let malformed = 0;
+		const result = parseJsonlLenient<{ a: number }>('{"a":1}\n\n  {bad 1}\n{"a":2}\n{bad 2}', {
+			onMalformedRecord: () => {
+				malformed++;
+			},
+		});
+		expect(result).toEqual([{ a: 1 }, { a: 2 }]);
+		expect(malformed).toBe(2);
+	});
 });
 
 describe("readSseJson", () => {

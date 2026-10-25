@@ -613,9 +613,11 @@ export async function* readSseEvents(
  */
 export function parseJsonlLenient<T>(buffer: string, options: { onMalformedRecord?: () => void } = {}): T[] {
 	let entries: T[] | undefined;
+	let cursor = 0;
+	const len = buffer.length;
 
-	while (buffer.length > 0) {
-		const { values, error, read, done } = Bun.JSONL.parseChunk(buffer);
+	while (cursor < len) {
+		const { values, error, read, done } = Bun.JSONL.parseChunk(buffer, cursor);
 		if (values.length > 0) {
 			const ext = values as T[];
 			if (!entries) {
@@ -625,18 +627,30 @@ export function parseJsonlLenient<T>(buffer: string, options: { onMalformedRecor
 			}
 		}
 		if (error) {
-			const nextNewline = buffer.indexOf("\n", read);
-			const malformedEnd = nextNewline === -1 ? buffer.length : nextNewline;
-			if (buffer.substring(read, malformedEnd).trim().length > 0) options.onMalformedRecord?.();
+			let malformedStart = read;
+			while (malformedStart < len) {
+				const code = buffer.charCodeAt(malformedStart);
+				if (code !== 32 && code !== 9 && code !== 10 && code !== 13) break;
+				malformedStart++;
+			}
+			const nextNewline = buffer.indexOf("\n", malformedStart);
+			const malformedEnd = nextNewline === -1 ? len : nextNewline;
+			if (malformedStart < malformedEnd) options.onMalformedRecord?.();
 			if (nextNewline === -1) break;
-			buffer = buffer.substring(nextNewline + 1);
+			cursor = nextNewline + 1;
 			continue;
 		}
-		if (read === 0) {
-			if (buffer.trim().length > 0) options.onMalformedRecord?.();
+		if (read === cursor) {
+			let nonWs = cursor;
+			while (nonWs < len) {
+				const code = buffer.charCodeAt(nonWs);
+				if (code !== 32 && code !== 9 && code !== 10 && code !== 13) break;
+				nonWs++;
+			}
+			if (nonWs < len) options.onMalformedRecord?.();
 			break;
 		}
-		buffer = buffer.substring(read);
+		cursor = read;
 		if (done) break;
 	}
 	return entries ?? [];
