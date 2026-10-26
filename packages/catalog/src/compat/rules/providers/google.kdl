@@ -8,6 +8,8 @@ provider "google" {
 	}
 	web-search "gemini"
 	image-count-budget 200
+	request-encodings "gzip"
+	request-encoding-rejection "Unsupported Content-Encoding|Invalid JSON payload received"
 
 	class "unknown" {
 		thinking-efforts "minimal" "low" "medium" "high"

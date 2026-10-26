@@ -2027,6 +2027,7 @@ export async function runRpcMode(session: AgentSession, options: RpcModeOptions 
 				}
 				if (!result.data.cancelled) {
 					inputGate.commitSessionChange(command);
+					session.prewarmModelConnection();
 					// `branch` leaves a live run streaming to its normal yield; new/switch detach it.
 					if (command.type !== "branch" && command.type !== "fork") promptResults.abortOpen();
 					// The detached run publishes no terminal agent_end to settle on.
@@ -2052,6 +2053,7 @@ export async function runRpcMode(session: AgentSession, options: RpcModeOptions 
 				}
 				if (!result.cancelled) {
 					inputGate.commitSessionChange(command);
+					session.prewarmModelConnection();
 					// Opening the session that is already open switches nothing and leaves a live run
 					// going. Any real open (switch or new) changes the file, even when an aliased path
 					// reopens a transcript with the same id.
@@ -2067,6 +2069,7 @@ export async function runRpcMode(session: AgentSession, options: RpcModeOptions 
 			// =================================================================
 
 			case "get_state": {
+				session.prewarmModelConnection();
 				// A goal exit triggered by the last turn restores tools asynchronously; report after it.
 				await goalController.settled();
 				const queuedMessages = session.getQueuedMessages();
@@ -2319,6 +2322,7 @@ export async function runRpcMode(session: AgentSession, options: RpcModeOptions 
 					return error(id, "set_model", `Model not found: ${command.provider}/${command.modelId}`);
 				}
 				await session.setModel(model);
+				session.prewarmModelConnection();
 				return success(id, "set_model", model);
 			}
 
@@ -2327,6 +2331,7 @@ export async function runRpcMode(session: AgentSession, options: RpcModeOptions 
 				if (!result) {
 					return success(id, "cycle_model", null);
 				}
+				session.prewarmModelConnection();
 				return success(id, "cycle_model", result);
 			}
 
@@ -2646,6 +2651,7 @@ export async function runRpcMode(session: AgentSession, options: RpcModeOptions 
 				if (!isTextCursor(command.text, command.cursor)) {
 					return error(id, "predict_word", INVALID_TEXT_CURSOR_ERROR);
 				}
+				if (command.text) session.prewarmModelConnection();
 				try {
 					const method = cfgSpellingAutocomplete.get(session.settings);
 					const suffix = await wordPredictor.predict(method, command.text, command.cursor);

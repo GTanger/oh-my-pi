@@ -1,8 +1,13 @@
 import { isCatalogEndpointUrl } from "@oh-my-pi/pi-catalog/compat/catalog-endpoint";
+import { ensureAntigravityVersion } from "@oh-my-pi/pi-catalog/wire/gemini-headers";
 import { logger } from "@oh-my-pi/pi-utils";
 import type { Api, FetchImpl, Model } from "../types";
 import { lastDispatchOrigin, transportFetch } from "../utils/transport-fetch";
 import { resolveAnthropicPrewarmTarget } from "./anthropic";
+
+function isFirstPartyGoogleProvider(provider: string): boolean {
+	return provider === "google" || provider === "google-gemini-cli" || provider === "google-antigravity";
+}
 
 /**
  * Minimum gap between warm-ups of one origin. Idle pooled sockets outlive it
@@ -31,9 +36,10 @@ function resolvePrewarmTarget(model: Model<Api>): { origin: string; init: Reques
 		const target = resolveAnthropicPrewarmTarget(model);
 		return target && { origin: new URL(target.url).origin, init: target.init };
 	}
-	const origin = lastDispatchOrigin(model);
-	if (!origin || !isCatalogEndpointUrl(model, origin)) return undefined;
-	return { origin, init: {} };
+	const candidate =
+		lastDispatchOrigin(model) ?? (isFirstPartyGoogleProvider(model.provider) ? model.baseUrl : undefined);
+	if (!candidate || !isCatalogEndpointUrl(model, candidate)) return undefined;
+	return { origin: new URL(candidate).origin, init: {} };
 }
 
 /**
@@ -53,6 +59,9 @@ export async function prewarmModelConnection(model: Model<Api>, options?: { fetc
 		const target = resolvePrewarmTarget(model);
 		if (!target) return;
 		origin = target.origin;
+		if (model.provider === "google-antigravity" && !options?.fetch) {
+			void ensureAntigravityVersion().catch(() => {});
+		}
 		const now = Date.now();
 		const last = prewarmedAt.get(origin);
 		if (last !== undefined && now - last < PREWARM_INTERVAL_MS) return;

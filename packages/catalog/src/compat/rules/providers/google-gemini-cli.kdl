@@ -3,6 +3,8 @@
 provider "google-gemini-cli" {
 	default-model "gemini-3.1-pro-preview"
 	image-count-budget 200
+	request-encodings "gzip"
+	request-encoding-rejection "Unsupported Content-Encoding|Invalid JSON payload received"
 
 	class "gemini" {
 		// Cloud Code Assist rejects an unsigned first function call; the bypass

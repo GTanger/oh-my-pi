@@ -2,6 +2,10 @@
 
 ## [Unreleased]
 
+### Changed
+
+- `prewarmModelConnection` now warms first-party `google`, `google-gemini-cli`, and `google-antigravity` catalog endpoints before the first turn (and resolves the Antigravity version manifest in parallel during prewarm), `streamGoogleGeminiCli` and `streamGoogleGenAI` gzip-compress large request bodies via `wrapFetchForRequestCompression`, and `normalizeSchemaForGoogle` / `normalizeSchemaForCCA` memoize normalized tool schemas per schema object ([#17102](https://github.com/can1357/oh-my-pi/pull/17102) by [@GTanger](https://github.com/GTanger))
+
 ## [18.13.0] - 2026-10-26
 
 ### Breaking Changes

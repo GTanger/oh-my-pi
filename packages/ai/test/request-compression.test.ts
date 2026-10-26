@@ -222,4 +222,50 @@ describe("wrapFetchForRequestCompression", () => {
 		expect(calls.map(call => call.headers["Content-Encoding"])).toEqual(["zstd"]);
 		expect(await response.text()).toBe(error);
 	});
+
+	it("gzips large request bodies for google-antigravity, google-gemini-cli, and google, and falls back to uncompressed on 415 rejection", async () => {
+		const antigravity = model("google-antigravity", "google-gemini-cli", "https://daily-cloudcode-pa.googleapis.com");
+		const geminiCli = model("google-gemini-cli", "google-gemini-cli", "https://cloudcode-pa.googleapis.com");
+		const google = model("google", "google-generative-ai", "https://generativelanguage.googleapis.com");
+
+		const google415 = () =>
+			new Response(
+				JSON.stringify({
+					error: {
+						code: 415,
+						message: "Unsupported Content-Encoding; only identity/gzip are supported.",
+						status: "UNSUPPORTED_MEDIA_TYPE",
+					},
+				}),
+				{ status: 415, headers: { "Content-Type": "application/json" } },
+			);
+
+		const { calls, fetch } = captureFetch([new Response("{}"), new Response("{}"), new Response("{}"), google415()]);
+
+		const antigravityDailyUrl = "https://daily-cloudcode-pa.googleapis.com/v1internal:streamGenerateContent?alt=sse";
+		const antigravitySandboxUrl =
+			"https://daily-cloudcode-pa.sandbox.googleapis.com/v1internal:streamGenerateContent?alt=sse";
+		const geminiCliUrl = "https://cloudcode-pa.googleapis.com/v1internal:streamGenerateContent?alt=sse";
+		const googleUrl =
+			"https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash:streamGenerateContent?alt=sse";
+
+		// antigravity prod endpoint
+		await wrapFetchForRequestCompression(fetch, antigravity)(antigravityDailyUrl, post());
+		// antigravity sandbox endpoint
+		await wrapFetchForRequestCompression(fetch, antigravity)(antigravitySandboxUrl, post());
+		// gemini-cli endpoint
+		await wrapFetchForRequestCompression(fetch, geminiCli)(geminiCliUrl, post());
+
+		// google endpoint with 415 rejection -> retry uncompressed
+		const toGoogle = wrapFetchForRequestCompression(fetch, google);
+		const response = await toGoogle(googleUrl, post());
+
+		expect(response.status).toBe(200);
+		expect(calls.map(call => call.headers["Content-Encoding"])).toEqual(["gzip", "gzip", "gzip", "gzip", undefined]);
+		expect(decode(calls[0].body, Bun.gunzipSync)).toBe(LARGE_BODY);
+		expect(decode(calls[1].body, Bun.gunzipSync)).toBe(LARGE_BODY);
+		expect(decode(calls[2].body, Bun.gunzipSync)).toBe(LARGE_BODY);
+		expect(decode(calls[3].body, Bun.gunzipSync)).toBe(LARGE_BODY);
+		expect(calls[4].body).toBe(LARGE_BODY);
+	});
 });

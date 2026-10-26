@@ -769,4 +769,21 @@ describe("normalizeSchemaForGoogle parity with python-genai process_schema", () 
 			}),
 		).toEqual({ type: "string", title: "Name", nullable: true });
 	});
+
+	it("memoizes normalized schema object for Google and CCA across repeated calls", () => {
+		const schema = {
+			type: "object",
+			properties: {
+				foo: { type: "string" },
+			},
+		};
+
+		const google1 = normalizeSchemaForGoogle(schema);
+		const google2 = normalizeSchemaForGoogle(schema);
+		expect(google1).toBe(google2);
+
+		const cca1 = normalizeSchemaForCCA(schema);
+		const cca2 = normalizeSchemaForCCA(schema);
+		expect(cca1).toBe(cca2);
+	});
 });
