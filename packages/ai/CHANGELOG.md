@@ -4,7 +4,12 @@
 
 ### Changed
 
-- `prewarmModelConnection` now warms first-party `google`, `google-gemini-cli`, and `google-antigravity` catalog endpoints before the first turn (and resolves the Antigravity version manifest in parallel during prewarm), `streamGoogleGeminiCli` and `streamGoogleGenAI` gzip-compress large request bodies via `wrapFetchForRequestCompression`, and `normalizeSchemaForGoogle` / `normalizeSchemaForCCA` memoize normalized tool schemas per schema object ([#17102](https://github.com/can1357/oh-my-pi/pull/17102) by [@GTanger](https://github.com/GTanger))
+- `prewarmModelConnection` now warms catalog endpoints opted into `prewarm-base-url` (`google`, `google-gemini-cli`) before the first turn, `streamGoogleGeminiCli` overlaps the Antigravity version manifest lookup with request preparation, `streamGoogleGeminiCli` and `streamGoogleGenAI` gzip-compress large request bodies, and `normalizeSchemaForGoogle` / `normalizeSchemaForCCA` cache normalized tool-schema templates ([#17102](https://github.com/can1357/oh-my-pi/pull/17102) by [@GTanger](https://github.com/GTanger))
+
+### Fixed
+
+- Codex accounts whose spend cap is used up are no longer picked through credit overage or from usage cached before the upgrade ([#16973](https://github.com/can1357/oh-my-pi/pull/16973) by [@DusKing1](https://github.com/DusKing1))
+- Fixed Codex capacity 429s (`turn_rate_limit_exceeded`, "Codex is at capacity") reporting "Try again in ~N min" from the plan's usage-window reset, which made retries wait hours instead of the response's Retry-After ([#17087](https://github.com/can1357/oh-my-pi/pull/17087) by [@H4vC](https://github.com/H4vC))
 
 ## [18.13.0] - 2026-10-26
 

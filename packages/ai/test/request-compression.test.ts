@@ -267,5 +267,21 @@ describe("wrapFetchForRequestCompression", () => {
 		expect(decode(calls[2].body, Bun.gunzipSync)).toBe(LARGE_BODY);
 		expect(decode(calls[3].body, Bun.gunzipSync)).toBe(LARGE_BODY);
 		expect(calls[4].body).toBe(LARGE_BODY);
+
+		// Ordinary Google schema 400 ("Invalid JSON payload received...") must NOT
+		// trigger an uncompressed resend.
+		const schema400 = JSON.stringify({
+			error: {
+				code: 400,
+				message: "Invalid JSON payload received. Unknown name \"foo\" at 'tools[0]'",
+				status: "INVALID_ARGUMENT",
+			},
+		});
+		const { calls: calls400, fetch: fetch400 } = captureFetch([
+			new Response(schema400, { status: 400, headers: { "Content-Type": "application/json" } }),
+		]);
+		const res400 = await wrapFetchForRequestCompression(fetch400, geminiCli)(geminiCliUrl, post());
+		expect(res400.status).toBe(400);
+		expect(calls400).toHaveLength(1);
 	});
 });

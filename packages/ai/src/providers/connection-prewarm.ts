@@ -1,13 +1,9 @@
 import { isCatalogEndpointUrl } from "@oh-my-pi/pi-catalog/compat/catalog-endpoint";
-import { ensureAntigravityVersion } from "@oh-my-pi/pi-catalog/wire/gemini-headers";
+import { resolveCatalogPolicy } from "@oh-my-pi/pi-catalog/compat/catalog-policy";
 import { logger } from "@oh-my-pi/pi-utils";
 import type { Api, FetchImpl, Model } from "../types";
 import { lastDispatchOrigin, transportFetch } from "../utils/transport-fetch";
 import { resolveAnthropicPrewarmTarget } from "./anthropic";
-
-function isFirstPartyGoogleProvider(provider: string): boolean {
-	return provider === "google" || provider === "google-gemini-cli" || provider === "google-antigravity";
-}
 
 /**
  * Minimum gap between warm-ups of one origin. Idle pooled sockets outlive it
@@ -22,14 +18,15 @@ const prewarmedAt = new Map<string, number>();
 /**
  * Where a warm-up for {@link model} goes, or `undefined` when it must not be
  * probed. First-party Anthropic resolves its effective endpoint (following
- * `ANTHROPIC_BASE_URL`/Foundry reroutes) and TLS options up front. Every
- * other model warms only the origin its last inference request actually
- * reached, so credential endpoints (Copilot plans), env overrides
- * (`MOONSHOT_BASE_URL`, `XAI_BASE_URL`), and regional hosts are never guessed
- * from `baseUrl`; before its first request there is nothing to warm. That
- * origin must also be the provider's own endpoint: a custom provider, or a
- * catalog provider id routed to a gateway, proxy, or local server, is never
- * probed.
+ * `ANTHROPIC_BASE_URL`/Foundry reroutes) and TLS options up front. Other
+ * models warm the origin their last inference request actually reached
+ * (`lastDispatchOrigin`), falling back to `model.baseUrl` before the first
+ * request only when the provider opts in via the KDL `prewarm-base-url` axis,
+ * so credential endpoints (Copilot plans), env overrides (`MOONSHOT_BASE_URL`,
+ * `XAI_BASE_URL`), endpoint-mode switches (`google-antigravity`), and regional
+ * hosts are never guessed. That origin must also be the provider's own
+ * endpoint (`isCatalogEndpointUrl`): a custom provider, or a catalog provider
+ * id routed to a gateway, proxy, or local server, is never probed.
  */
 function resolvePrewarmTarget(model: Model<Api>): { origin: string; init: RequestInit } | undefined {
 	if (model.provider === "anthropic") {
@@ -37,7 +34,7 @@ function resolvePrewarmTarget(model: Model<Api>): { origin: string; init: Reques
 		return target && { origin: new URL(target.url).origin, init: target.init };
 	}
 	const candidate =
-		lastDispatchOrigin(model) ?? (isFirstPartyGoogleProvider(model.provider) ? model.baseUrl : undefined);
+		lastDispatchOrigin(model) ?? (resolveCatalogPolicy(model).prewarmBaseUrl === true ? model.baseUrl : undefined);
 	if (!candidate || !isCatalogEndpointUrl(model, candidate)) return undefined;
 	return { origin: new URL(candidate).origin, init: {} };
 }
@@ -59,9 +56,6 @@ export async function prewarmModelConnection(model: Model<Api>, options?: { fetc
 		const target = resolvePrewarmTarget(model);
 		if (!target) return;
 		origin = target.origin;
-		if (model.provider === "google-antigravity" && !options?.fetch) {
-			void ensureAntigravityVersion().catch(() => {});
-		}
 		const now = Date.now();
 		const last = prewarmedAt.get(origin);
 		if (last !== undefined && now - last < PREWARM_INTERVAL_MS) return;

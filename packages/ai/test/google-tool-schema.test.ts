@@ -770,7 +770,7 @@ describe("normalizeSchemaForGoogle parity with python-genai process_schema", () 
 		).toEqual({ type: "string", title: "Name", nullable: true });
 	});
 
-	it("memoizes normalized schema object for Google and CCA across repeated calls", () => {
+	it("isolates cached Google and CCA normalized schemas from caller in-place mutations across repeated calls", () => {
 		const schema = {
 			type: "object",
 			properties: {
@@ -778,12 +778,14 @@ describe("normalizeSchemaForGoogle parity with python-genai process_schema", () 
 			},
 		};
 
-		const google1 = normalizeSchemaForGoogle(schema);
-		const google2 = normalizeSchemaForGoogle(schema);
-		expect(google1).toBe(google2);
+		const google1 = normalizeSchemaForGoogle(schema) as { properties: Record<string, unknown> };
+		google1.properties.foo = { type: "number" };
+		const google2 = normalizeSchemaForGoogle(schema) as { properties: Record<string, unknown> };
+		expect(google2.properties.foo).toEqual({ type: "string" });
 
-		const cca1 = normalizeSchemaForCCA(schema);
-		const cca2 = normalizeSchemaForCCA(schema);
-		expect(cca1).toBe(cca2);
+		const cca1 = normalizeSchemaForCCA(schema) as { properties: Record<string, unknown> };
+		cca1.properties.foo = { type: "boolean" };
+		const cca2 = normalizeSchemaForCCA(schema) as { properties: Record<string, unknown> };
+		expect(cca2.properties.foo).toEqual({ type: "string" });
 	});
 });

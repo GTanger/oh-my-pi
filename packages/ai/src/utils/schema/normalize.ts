@@ -1297,100 +1297,61 @@ export function normalizeSchema(value: unknown, options: NormalizeSchemaOptions)
 const kGoogleSchema = Symbol("omp.schema.google");
 const kCcaSchema = Symbol("omp.schema.cca");
 
+const GOOGLE_SCHEMA_OPTIONS: NormalizeSchemaOptions = {
+	coerceBooleanSubschemas: "standard",
+	unsupportedFields: isGoogleUnsupportedSchemaField,
+	normalizeFieldNames: true,
+	collapseNullFields: true,
+	scalarizeTypeArrays: true,
+	stripNullableKeyword: false,
+	autoPropertyOrdering: true,
+	ensureObjectProperties: true,
+	liftStrippedToDescription: { format: "spill" },
+	mergeObjectCombiners: false,
+	collapseSameTypeCombiners: false,
+	collapseMixedTypeCombiners: false,
+	stripResidualCombinersFixpoint: false,
+	extractNullableFromUnions: false,
+	inferTypeForBareEnum: true,
+	dropNonScalarEnum: false,
+	stringEnumsOnly: true,
+	foldOneOfIntoAnyOf: false,
+};
+
+const CCA_SCHEMA_OPTIONS: NormalizeSchemaOptions = {
+	coerceBooleanSubschemas: "standard",
+	unsupportedFields: isGoogleUnsupportedSchemaField,
+	normalizeFieldNames: true,
+	collapseNullFields: false,
+	scalarizeTypeArrays: true,
+	stripNullableKeyword: true,
+	autoPropertyOrdering: false,
+	ensureObjectProperties: true,
+	liftStrippedToDescription: { format: "spill" },
+	mergeObjectCombiners: true,
+	collapseSameTypeCombiners: true,
+	collapseMixedTypeCombiners: true,
+	stripResidualCombinersFixpoint: true,
+	extractNullableFromUnions: true,
+	inferTypeForBareEnum: true,
+	dropNonScalarEnum: false,
+	foldOneOfIntoAnyOf: false,
+	rejectResidualIncompatibilities: ["type-array", "type-null", "nullable", "combiners", "not"],
+	validateAndFallback: { fallback: CLOUD_CODE_ASSIST_CLAUDE_FALLBACK_SCHEMA },
+};
+
 export function normalizeSchemaForGoogle(value: unknown): unknown {
 	if (typeof value === "object" && value !== null) {
-		return stamp(value, kGoogleSchema, s =>
-			normalizeSchema(s, {
-				coerceBooleanSubschemas: "standard",
-				unsupportedFields: isGoogleUnsupportedSchemaField,
-				normalizeFieldNames: true,
-				collapseNullFields: true,
-				scalarizeTypeArrays: true,
-				stripNullableKeyword: false,
-				autoPropertyOrdering: true,
-				ensureObjectProperties: true,
-				liftStrippedToDescription: { format: "spill" },
-				mergeObjectCombiners: false,
-				collapseSameTypeCombiners: false,
-				collapseMixedTypeCombiners: false,
-				stripResidualCombinersFixpoint: false,
-				extractNullableFromUnions: false,
-				inferTypeForBareEnum: true,
-				dropNonScalarEnum: false,
-				stringEnumsOnly: true,
-				foldOneOfIntoAnyOf: false,
-			}),
-		);
+		return structuredClone(stamp(value, kGoogleSchema, s => normalizeSchema(s, GOOGLE_SCHEMA_OPTIONS)));
 	}
-	return normalizeSchema(value, {
-		coerceBooleanSubschemas: "standard",
-		unsupportedFields: isGoogleUnsupportedSchemaField,
-		normalizeFieldNames: true,
-		collapseNullFields: true,
-		scalarizeTypeArrays: true,
-		stripNullableKeyword: false,
-		autoPropertyOrdering: true,
-		ensureObjectProperties: true,
-		liftStrippedToDescription: { format: "spill" },
-		mergeObjectCombiners: false,
-		collapseSameTypeCombiners: false,
-		collapseMixedTypeCombiners: false,
-		stripResidualCombinersFixpoint: false,
-		extractNullableFromUnions: false,
-		inferTypeForBareEnum: true,
-		dropNonScalarEnum: false,
-		stringEnumsOnly: true,
-		foldOneOfIntoAnyOf: false,
-	});
+	return normalizeSchema(value, GOOGLE_SCHEMA_OPTIONS);
 }
 
 export function normalizeSchemaForCCA(value: unknown): unknown {
 	if (typeof value === "object" && value !== null) {
-		return stamp(value, kCcaSchema, s =>
-			normalizeSchema(s, {
-				coerceBooleanSubschemas: "standard",
-				unsupportedFields: isGoogleUnsupportedSchemaField,
-				normalizeFieldNames: true,
-				collapseNullFields: false,
-				scalarizeTypeArrays: true,
-				stripNullableKeyword: true,
-				autoPropertyOrdering: false,
-				ensureObjectProperties: true,
-				liftStrippedToDescription: { format: "spill" },
-				mergeObjectCombiners: true,
-				collapseSameTypeCombiners: true,
-				collapseMixedTypeCombiners: true,
-				stripResidualCombinersFixpoint: true,
-				extractNullableFromUnions: true,
-				inferTypeForBareEnum: true,
-				dropNonScalarEnum: false,
-				foldOneOfIntoAnyOf: false,
-				rejectResidualIncompatibilities: ["type-array", "type-null", "nullable", "combiners", "not"],
-				validateAndFallback: { fallback: CLOUD_CODE_ASSIST_CLAUDE_FALLBACK_SCHEMA },
-			}),
-		);
+		return structuredClone(stamp(value, kCcaSchema, s => normalizeSchema(s, CCA_SCHEMA_OPTIONS)));
 	}
-	return normalizeSchema(value, {
-		coerceBooleanSubschemas: "standard",
-		unsupportedFields: isGoogleUnsupportedSchemaField,
-		normalizeFieldNames: true,
-		collapseNullFields: false,
-		scalarizeTypeArrays: true,
-		stripNullableKeyword: true,
-		autoPropertyOrdering: false,
-		ensureObjectProperties: true,
-		liftStrippedToDescription: { format: "spill" },
-		mergeObjectCombiners: true,
-		collapseSameTypeCombiners: true,
-		collapseMixedTypeCombiners: true,
-		stripResidualCombinersFixpoint: true,
-		extractNullableFromUnions: true,
-		inferTypeForBareEnum: true,
-		dropNonScalarEnum: false,
-		foldOneOfIntoAnyOf: false,
-		rejectResidualIncompatibilities: ["type-array", "type-null", "nullable", "combiners", "not"],
-		validateAndFallback: { fallback: CLOUD_CODE_ASSIST_CLAUDE_FALLBACK_SCHEMA },
-	});
+	return normalizeSchema(value, CCA_SCHEMA_OPTIONS);
 }
 
 export function normalizeSchemaForMCP(value: unknown): unknown {
