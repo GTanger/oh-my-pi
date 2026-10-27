@@ -5,6 +5,9 @@
 ### Changed
 
 - Prewarm Google (`google`, `google-gemini-cli`, `google-antigravity`) API connections before the first turn, compress opted-in Google request payloads with `gzip` above 32 KiB (with automatic plaintext fallback on `"Unsupported Content-Encoding"` rejections), and memoize normalized Gemini/Claude Code Assist tool schemas ([#17102](https://github.com/can1357/oh-my-pi/pull/17102) by [@GTanger](https://github.com/GTanger))
+### Fixed
+
+- Fixed Devin requests compressing the request body on the UI thread, which briefly froze the TUI on long conversations; requests under 1 KiB are now sent uncompressed
 
 ## [18.13.1] - 2026-10-27
 
