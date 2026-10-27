@@ -1296,6 +1296,8 @@ export function normalizeSchema(value: unknown, options: NormalizeSchemaOptions)
 }
 const kGoogleSchema = Symbol("omp.schema.google");
 const kCcaSchema = Symbol("omp.schema.cca");
+const kGoogleCcaSchema = Symbol("omp.schema.google-cca");
+const googleCloneToSource = new WeakMap<object, object>();
 
 const GOOGLE_SCHEMA_OPTIONS: NormalizeSchemaOptions = {
 	coerceBooleanSubschemas: "standard",
@@ -1340,15 +1342,40 @@ const CCA_SCHEMA_OPTIONS: NormalizeSchemaOptions = {
 	validateAndFallback: { fallback: CLOUD_CODE_ASSIST_CLAUDE_FALLBACK_SCHEMA },
 };
 
+function normalizeGoogleSchemaCached(value: object): unknown {
+	return stamp(value, kGoogleSchema, s => normalizeSchema(s, GOOGLE_SCHEMA_OPTIONS));
+}
+
 export function normalizeSchemaForGoogle(value: unknown): unknown {
 	if (typeof value === "object" && value !== null) {
-		return structuredClone(stamp(value, kGoogleSchema, s => normalizeSchema(s, GOOGLE_SCHEMA_OPTIONS)));
+		const normalized = normalizeGoogleSchemaCached(value);
+		const cloned = structuredClone(normalized);
+		if (typeof cloned === "object" && cloned !== null) {
+			googleCloneToSource.set(cloned, value);
+		}
+		return cloned;
 	}
 	return normalizeSchema(value, GOOGLE_SCHEMA_OPTIONS);
 }
 
+export function normalizeSchemaForGoogleCCA(value: unknown): unknown {
+	if (typeof value === "object" && value !== null) {
+		const source = googleCloneToSource.get(value) ?? value;
+		return structuredClone(
+			stamp(source, kGoogleCcaSchema, s =>
+				normalizeSchema(normalizeGoogleSchemaCached(s), CCA_SCHEMA_OPTIONS),
+			),
+		);
+	}
+	return normalizeSchema(normalizeSchema(value, GOOGLE_SCHEMA_OPTIONS), CCA_SCHEMA_OPTIONS);
+}
+
 export function normalizeSchemaForCCA(value: unknown): unknown {
 	if (typeof value === "object" && value !== null) {
+		const googleSource = googleCloneToSource.get(value);
+		if (googleSource !== undefined) {
+			return normalizeSchemaForGoogleCCA(googleSource);
+		}
 		return structuredClone(stamp(value, kCcaSchema, s => normalizeSchema(s, CCA_SCHEMA_OPTIONS)));
 	}
 	return normalizeSchema(value, CCA_SCHEMA_OPTIONS);

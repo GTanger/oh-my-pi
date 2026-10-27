@@ -38,7 +38,6 @@ import { armPreResponseTimeout, getStreamFirstEventTimeoutMs, iterateWithIdleTim
 // Refresh is the sole responsibility of AuthStorage (broker-aware, single-flighted);
 // the stream provider trusts the access token threaded through `options.apiKey`.
 import { wrapFetchForRequestCompression } from "../utils/request-compression";
-import { normalizeSchemaForCCA } from "../utils/schema";
 import { StreamMarkupHealing, type StreamMarkupHealingEvent } from "../utils/stream-markup-healing";
 import { prepareAnthropicImageContext } from "./anthropic-images";
 import forcedToolDirective from "./google-antigravity-forced-tool.md" with { type: "text" };
@@ -1216,25 +1215,6 @@ function deriveAntigravitySessionId(context: Context): string {
 	return randomSignedDecimalSessionId();
 }
 
-function normalizeAntigravityTools(
-	tools: CloudCodeAssistRequest["request"]["tools"],
-): CloudCodeAssistRequest["request"]["tools"] {
-	return tools?.map(tool => ({
-		...tool,
-		functionDeclarations: tool.functionDeclarations.map(declaration => {
-			if ("parameters" in declaration) {
-				return declaration;
-			}
-
-			const { parametersJsonSchema, ...rest } = declaration;
-			return {
-				...rest,
-				parameters: normalizeSchemaForCCA(parametersJsonSchema),
-			};
-		}),
-	}));
-}
-
 interface AntigravityRequestEnvelope {
 	sessionId: string;
 	requestId: string;
@@ -1358,8 +1338,7 @@ export function buildRequest(
 	}
 
 	if (context.tools && context.tools.length > 0) {
-		const convertedTools = convertTools(context.tools, model);
-		request.tools = isAntigravity ? normalizeAntigravityTools(convertedTools) : convertedTools;
+		request.tools = convertTools(context.tools, model, { antigravity: isAntigravity });
 		if (options.toolChoice) {
 			const choice = options.toolChoice;
 			if (typeof choice === "string") {
