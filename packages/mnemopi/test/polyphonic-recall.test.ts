@@ -322,8 +322,8 @@ describe("PolyphonicRecallEngine", () => {
 				JSON.stringify([0.7071, 0.7071]),
 			]);
 
-			// Repeated calls across both engines sharing the database and underlying cache
-			for (let i = 0; i < 3; i++) {
+			// Cold then warm calls across both engines sharing the database and underlying cache
+			for (let i = 0; i < 2; i++) {
 				const aHits = engineA.vectorVoice([1, 0]).map(h => h.memoryId);
 				expect(aHits).toContain("wm-session-a");
 				expect(aHits).toContain("wm-global-shared");
