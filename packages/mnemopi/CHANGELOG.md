@@ -2,6 +2,10 @@
 
 ## [Unreleased]
 
+### Fixed
+
+- Fixed `EpisodicGraph.extractFacts` truncating multi-word objects, dropping numeric objects, matching cross-line subjects, capturing sentence-initial stopword subjects (`This`, `That`, `It`) that created false-positive graph edges, and missing Unicode names and CJK entity triples; updated `findFactsBySubject` to match ASCII case-insensitively and match lowercase, uppercase, and title-case spellings of non-ASCII names.
+
 ## [18.13.2] - 2026-10-27
 
 ### Fixed
