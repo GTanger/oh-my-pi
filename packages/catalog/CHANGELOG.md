@@ -5,6 +5,7 @@
 ### Added
 
 - Added the `prewarm-base-url` catalog axis (`prewarmBaseUrl`) and opted `google` and `google-gemini-cli` into pre-first-turn connection prewarming and `gzip` request body compression (`google-antigravity` also opts into `gzip` compression and declares its sandbox endpoint host) ([#17102](https://github.com/can1357/oh-my-pi/pull/17102) by [@GTanger](https://github.com/GTanger))
+- Added LM Studio decision models to discovery: models LM Studio reports as `type: "decision"` are listed as `judge` models served over its `/v1/decisions` endpoint, alongside its chat models ([#17169](https://github.com/can1357/oh-my-pi/pull/17169) by [@richiestanaway](https://github.com/richiestanaway))
 
 ## [18.13.1] - 2026-10-27
 
