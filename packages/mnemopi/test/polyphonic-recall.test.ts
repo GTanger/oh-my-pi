@@ -285,4 +285,57 @@ describe("PolyphonicRecallEngine", () => {
 			closeQuietly(beam.db);
 		}
 	});
+
+	it("isolates and recalls accurately across engines sharing a database with different sessionIds", () => {
+		const beam = makeBeam();
+		try {
+			const timestamp = new Date().toISOString();
+			const engineA = new PolyphonicRecallEngine({
+				db: beam.db,
+				sessionId: "session-a",
+				channelId: beam.channelId,
+			});
+			const engineB = new PolyphonicRecallEngine({
+				db: beam.db,
+				sessionId: "session-b",
+				channelId: beam.channelId,
+			});
+
+			// session-a private memory
+			insertWorking(beam, "wm-session-a", "Session A memory", 0.9, timestamp, "session-a", "session");
+			beam.db.run("INSERT INTO memory_embeddings (memory_id, embedding_json, model) VALUES (?, ?, 'test')", [
+				"wm-session-a",
+				JSON.stringify([1, 0]),
+			]);
+
+			// session-b private memory
+			insertWorking(beam, "wm-session-b", "Session B memory", 0.9, timestamp, "session-b", "session");
+			beam.db.run("INSERT INTO memory_embeddings (memory_id, embedding_json, model) VALUES (?, ?, 'test')", [
+				"wm-session-b",
+				JSON.stringify([0, 1]),
+			]);
+
+			// global shared memory
+			insertWorking(beam, "wm-global-shared", "Global shared memory", 0.9, timestamp, "session-a", "global");
+			beam.db.run("INSERT INTO memory_embeddings (memory_id, embedding_json, model) VALUES (?, ?, 'test')", [
+				"wm-global-shared",
+				JSON.stringify([0.7071, 0.7071]),
+			]);
+
+			// Repeated calls across both engines sharing the database and underlying cache
+			for (let i = 0; i < 3; i++) {
+				const aHits = engineA.vectorVoice([1, 0]).map(h => h.memoryId);
+				expect(aHits).toContain("wm-session-a");
+				expect(aHits).toContain("wm-global-shared");
+				expect(aHits).not.toContain("wm-session-b");
+
+				const bHits = engineB.vectorVoice([0, 1]).map(h => h.memoryId);
+				expect(bHits).toContain("wm-session-b");
+				expect(bHits).toContain("wm-global-shared");
+				expect(bHits).not.toContain("wm-session-a");
+			}
+		} finally {
+			closeQuietly(beam.db);
+		}
+	});
 });

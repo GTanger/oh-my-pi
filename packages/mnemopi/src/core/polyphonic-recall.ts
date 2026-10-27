@@ -228,65 +228,31 @@ function getEmbeddingCache(db: Database): LRUCache<string, CachedEmbedding> {
 	return cache;
 }
 
-const RECLAIM_BATCH_SIZE = 400;
+interface DeferredAdmission {
+	readonly memoryId: string;
+	readonly entry: CachedEmbedding;
+}
 
-function reclaimDepartedCacheSlots(
-	db: Database,
-	cache: LRUCache<string, CachedEmbedding>,
-	rows: readonly EmbeddingRow[],
-	now: string,
-): void {
-	const suspectIds = new Set<string>(cache.keys());
-	for (const row of rows) {
-		suspectIds.delete(row.memory_id);
-		if (suspectIds.size === 0) return;
-	}
-	const candidates = [...suspectIds];
-	for (let offset = 0; offset < candidates.length; offset += RECLAIM_BATCH_SIZE) {
-		const batch = candidates.slice(offset, offset + RECLAIM_BATCH_SIZE);
-		const placeholders = batch.map(() => "?").join(", ");
-		try {
-			const liveRows = db
-				.query(`
-					SELECT me.memory_id
-					FROM memory_embeddings me
-					JOIN working_memory wm ON wm.id = me.memory_id
-					WHERE me.memory_id IN (${placeholders})
-						AND wm.superseded_by IS NULL
-						AND (wm.valid_until IS NULL OR wm.valid_until > ?)
-					UNION ALL
-					SELECT me.memory_id
-					FROM memory_embeddings me
-					JOIN episodic_memory em ON em.id = me.memory_id
-					WHERE me.memory_id IN (${placeholders})
-						AND em.superseded_by IS NULL
-						AND (em.valid_until IS NULL OR em.valid_until > ?)
-				`)
-				.all(...batch, now, ...batch, now) as Array<{ memory_id: string }>;
-			for (const row of liveRows) suspectIds.delete(row.memory_id);
-		} catch {
-			return;
-		}
-	}
-	for (const departedId of suspectIds) {
-		cache.delete(departedId);
-	}
+interface VectorScanState {
+	hitEntries: number;
+	hitBytes: number;
+	readonly deferred: DeferredAdmission[];
+	deferredBytes: number;
 }
 
 function cosineAgainstRow(
-	db: Database,
 	cache: LRUCache<string, CachedEmbedding>,
 	unit: Float32Array,
 	row: EmbeddingRow,
-	rows: readonly EmbeddingRow[],
-	now: string,
-	state: { sweptDeparted: boolean },
+	scanState: VectorScanState,
 ): number | null {
-	const cached = cache.peek(row.memory_id);
+	const cached = cache.get(row.memory_id);
 	if (cached !== undefined) {
 		if (cached.rawJson === row.embedding_json) {
 			const { values, norm } = cached;
 			if (values.length !== unit.length || norm === 0) return null;
+			scanState.hitEntries++;
+			scanState.hitBytes += cached.byteSize;
 			let dot = 0;
 			for (let i = 0; i < values.length; i++) {
 				dot += (unit[i] as number) * (values[i] as number);
@@ -305,43 +271,34 @@ function cosineAgainstRow(
 	if (!Array.isArray(raw) || raw.length !== unit.length) return null;
 
 	const byteSize = row.memory_id.length * 2 + row.embedding_json.length * 2 + raw.length * 8 + 64;
-	let canAdmit =
-		cache.size < MAX_EMBEDDING_CACHE_ENTRIES && cache.calculatedSize + byteSize <= MAX_EMBEDDING_CACHE_BYTES;
-	if (!canAdmit && !state.sweptDeparted) {
-		state.sweptDeparted = true;
-		reclaimDepartedCacheSlots(db, cache, rows, now);
-		canAdmit =
-			cache.size < MAX_EMBEDDING_CACHE_ENTRIES && cache.calculatedSize + byteSize <= MAX_EMBEDDING_CACHE_BYTES;
-	}
+	const shouldDefer =
+		scanState.hitEntries + scanState.deferred.length < MAX_EMBEDDING_CACHE_ENTRIES &&
+		scanState.hitBytes + scanState.deferredBytes + byteSize <= MAX_EMBEDDING_CACHE_BYTES;
 
-	if (canAdmit) {
-		const values = new Float64Array(raw.length);
-		let normSq = 0;
-		let dot = 0;
-		for (let i = 0; i < raw.length; i++) {
-			const value = raw[i];
-			if (typeof value !== "number" || !Number.isFinite(value)) return null;
-			values[i] = value;
-			normSq += value * value;
-			dot += (unit[i] as number) * value;
-		}
-		if (normSq === 0) return null;
-		const norm = Math.sqrt(normSq);
-		cache.set(row.memory_id, { rawJson: row.embedding_json, values, norm, byteSize });
-		return dot / norm;
-	}
-
+	const values = shouldDefer ? new Float64Array(raw.length) : null;
 	let normSq = 0;
 	let dot = 0;
 	for (let i = 0; i < raw.length; i++) {
 		const value = raw[i];
 		if (typeof value !== "number" || !Number.isFinite(value)) return null;
+		if (values !== null) values[i] = value;
 		normSq += value * value;
 		dot += (unit[i] as number) * value;
 	}
 	if (normSq === 0) return null;
-	return dot / Math.sqrt(normSq);
+	const norm = Math.sqrt(normSq);
+
+	if (values !== null) {
+		scanState.deferred.push({
+			memoryId: row.memory_id,
+			entry: { rawJson: row.embedding_json, values, norm, byteSize },
+		});
+		scanState.deferredBytes += byteSize;
+	}
+
+	return dot / norm;
 }
+
 function queryTokens(query: string): string[] {
 	const tokens: string[] = [];
 	for (const match of query.toLowerCase().matchAll(/[\p{L}\p{N}_-]+/gu)) tokens.push(match[0]);
@@ -497,10 +454,15 @@ export class PolyphonicRecallEngine {
 		}
 
 		const cache = getEmbeddingCache(this.db);
-		const scanState = { sweptDeparted: false };
+		const scanState: VectorScanState = {
+			hitEntries: 0,
+			hitBytes: 0,
+			deferred: [],
+			deferredBytes: 0,
+		};
 		const byId = new Map<string, VoiceRecallResult>();
 		for (const row of rows) {
-			const cosine = cosineAgainstRow(this.db, cache, queryUnit, row, rows, now, scanState);
+			const cosine = cosineAgainstRow(cache, queryUnit, row, scanState);
 			if (cosine === null || cosine < VECTOR_VOICE_MIN_COSINE) continue;
 			const similarity = (cosine + 1) / 2;
 			const existing = byId.get(row.memory_id);
@@ -518,6 +480,21 @@ export class PolyphonicRecallEngine {
 				});
 			}
 		}
+
+		let admittedEntries = scanState.hitEntries;
+		let admittedBytes = scanState.hitBytes;
+		for (const { memoryId, entry } of scanState.deferred) {
+			if (
+				admittedEntries + 1 > MAX_EMBEDDING_CACHE_ENTRIES ||
+				admittedBytes + entry.byteSize > MAX_EMBEDDING_CACHE_BYTES
+			) {
+				continue;
+			}
+			admittedEntries++;
+			admittedBytes += entry.byteSize;
+			cache.set(memoryId, entry);
+		}
+
 		return [...byId.values()].sort((a, b) => b.score - a.score || a.memoryId.localeCompare(b.memoryId)).slice(0, 20);
 	}
 	/**
