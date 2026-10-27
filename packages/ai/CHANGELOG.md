@@ -4,7 +4,9 @@
 
 ### Changed
 
-- `prewarmModelConnection` now warms catalog endpoints opted into `prewarm-base-url` (`google`, `google-gemini-cli`) before the first turn, `streamGoogleGeminiCli` overlaps the Antigravity version manifest lookup with request preparation, `streamGoogleGeminiCli` and `streamGoogleGenAI` gzip-compress large request bodies, and `normalizeSchemaForGoogle` / `normalizeSchemaForCCA` cache normalized tool-schema templates ([#17102](https://github.com/can1357/oh-my-pi/pull/17102) by [@GTanger](https://github.com/GTanger))
+- Prewarm Google (`google`, `google-gemini-cli`, `google-antigravity`) API connections before the first turn, compress opted-in Google request payloads with `gzip` above 32 KiB (with automatic plaintext fallback on `"Unsupported Content-Encoding"` rejections), and memoize normalized Gemini/Claude Code Assist tool schemas ([#17102](https://github.com/can1357/oh-my-pi/pull/17102) by [@GTanger](https://github.com/GTanger))
+
+## [18.13.1] - 2026-10-27
 
 ### Fixed
 
