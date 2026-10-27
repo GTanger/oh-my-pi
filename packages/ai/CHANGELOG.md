@@ -4,7 +4,8 @@
 
 ### Changed
 
-- Prewarm Google (`google`, `google-gemini-cli`, `google-antigravity`) API connections before the first turn, compress opted-in Google request payloads with `gzip` above 32 KiB (with automatic plaintext fallback on `"Unsupported Content-Encoding"` rejections), and memoize normalized Gemini/Claude Code Assist tool schemas ([#17102](https://github.com/can1357/oh-my-pi/pull/17102) by [@GTanger](https://github.com/GTanger))
+- Prewarm Google (`google`, `google-gemini-cli`) API connections before the first turn, compress opted-in Google request payloads with `gzip` at or above 1 KiB (`1,024` bytes, with automatic plaintext fallback on `"Unsupported Content-Encoding"` rejections), and memoize normalized Gemini/Claude Code Assist tool schemas ([#17102](https://github.com/can1357/oh-my-pi/pull/17102) by [@GTanger](https://github.com/GTanger))
+
 ### Fixed
 
 - Fixed transient Google 429 rate-limit and capacity responses retrying in place without blocking or rotating credentials, while daily caps and zero-entitlement limits still rotate ([#17127](https://github.com/can1357/oh-my-pi/pull/17127) by [@GTanger](https://github.com/GTanger))
