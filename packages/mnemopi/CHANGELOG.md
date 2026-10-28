@@ -4,7 +4,7 @@
 
 ### Fixed
 
-- Fixed `EpisodicGraph.extractFacts` truncating multi-word objects, dropping numeric objects, matching cross-line subjects, capturing sentence-initial stopword subjects (`This`, `That`, `It`) that created false-positive graph edges, and missing Unicode names and CJK entity triples; updated `findFactsBySubject` to match ASCII case-insensitively and match lowercase, uppercase, and title-case spellings of non-ASCII names.
+- Fixed `EpisodicGraph.extractFacts` truncating multi-word objects, dropping numeric objects, matching cross-line or stopword subjects (`This`, `That`, `It`), and missing Unicode names and CJK entity triples, and updated `findFactsBySubject` to match case-insensitively ([#17240](https://github.com/can1357/oh-my-pi/pull/17240) by [@GTanger](https://github.com/GTanger)).
 
 ## [18.13.2] - 2026-10-27
 

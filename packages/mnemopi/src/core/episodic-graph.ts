@@ -152,37 +152,56 @@ const ENGLISH_FACT_STOP_WORDS: ReadonlySet<string> = new Set([
 
 const CJK_FACT_STOP_WORDS: ReadonlySet<string> = new Set([
 	"這",
+	"这",
 	"那",
 	"這個",
+	"这个",
 	"那個",
+	"那个",
 	"這項",
+	"这项",
 	"那項",
+	"那项",
 	"這些",
+	"这些",
 	"那些",
 	"它",
 	"他",
 	"她",
 	"他們",
+	"他们",
 	"她們",
+	"她们",
 	"它們",
+	"它们",
 	"我們",
+	"我们",
 	"你們",
+	"你们",
 	"自己",
+	"大家",
 	"什麼",
+	"什么",
 	"誰",
+	"谁",
 	"哪裡",
+	"哪里",
 	"如何",
 	"為什麼",
+	"为什么",
 	"此",
 	"該",
+	"该",
 	"目前",
 	"現在",
+	"现在",
 	"今天",
 	"昨天",
+	"明天",
 ]);
 
-const ENGLISH_ENTITY_SUBJECT =
-	"(?<![\\p{L}\\p{N}_])(\\p{Lu}[\\p{L}\\p{N}_.-]*(?:[ \\t]+\\p{Lu}[\\p{L}\\p{N}_.-]*){0,4})";
+const ENGLISH_ENTITY_TOKEN = "\\p{Lu}[\\p{L}\\p{N}_-]*(?:\\.[\\p{L}\\p{N}_-]+)*";
+const ENGLISH_ENTITY_SUBJECT = `(?<![\\p{L}\\p{N}_])(${ENGLISH_ENTITY_TOKEN}(?:[ \\t]+${ENGLISH_ENTITY_TOKEN}){0,4})`;
 const ENGLISH_OBJECT_PHRASE =
 	"([\\p{L}\\p{N}][\\p{L}\\p{N}_.\\-'/]*(?:[ \\t]+[\\p{L}\\p{N}][\\p{L}\\p{N}_.\\-'/]*){0,6})";
 
@@ -190,9 +209,83 @@ const CJK_LEFT_BOUNDARY = "(?:^|[，。！？；、：\\r\\n.!?;:\\s])";
 const CJK_SUBJECT_TOKEN = "([\\p{Script=Han}A-Za-z][\\p{Script=Han}A-Za-z0-9_.\\-]{1,11})";
 const CJK_OBJECT_PHRASE =
 	"([\\p{Script=Han}A-Za-z0-9][\\p{Script=Han}A-Za-z0-9_.\\-/]{0,20}(?:[ \\t]+[\\p{Script=Han}A-Za-z0-9][\\p{Script=Han}A-Za-z0-9_.\\-/]{0,20}){0,3})";
+const CJK_SUBJECT_LEADING_STOP_RE =
+	/^(?:這個|那個|這項|那項|這些|那些|這|那|此|該|这个|那个|这项|那项|这些|那些|这|该|我|你|他|她|它|我們|我们|你們|你们|他們|他们|她們|她们|它們|它们|自己|大家|什麼|什么|誰|谁|哪裡|哪里|這裡|这里|那裡|那里)/u;
+const CJK_SUBJECT_TRAILING_STOP_RE =
+	/[總总於于也都很就還还只才更最正曾已又再並并卻却在從从向對对給给把被讓让跟和與与及]$/u;
 const CJK_REJECT_PARTICLES =
-	/(?:的|了|嗎|呢|吧|啊|但|而|且|或|若|當|因為|所以|如果|雖然|已經|正在|決定|認為|覺得|發現|表示|說明|討論|最後|目前|現在|沒有|所有|還是|但是)/u;
+	/(?:的|了|嗎|吗|呢|吧|啊|但|而|且|或|若|當|当|因為|因为|所以|如果|雖然|虽然|已經|已经|正在|決定|决定|認為|认为|覺得|觉得|發現|发现|表示|說明|说明|討論|讨论|最後|最后|後來|后来|目前|現在|现在|沒有|没有|所有|還是|还是|但是|總是|总是|於是|于是|大家|比較|比较|結束|结束|開始|开始)/u;
 
+const FACT_EXTRACTION_PATTERNS: readonly {
+	readonly regex: RegExp;
+	readonly predicate: string;
+	readonly confidence: number;
+}[] = [
+	{
+		regex: new RegExp(
+			`${ENGLISH_ENTITY_SUBJECT}[ \\t]+is(?:[ \\t]+(?:a|an|the))?[ \\t]+${ENGLISH_OBJECT_PHRASE}`,
+			"gu",
+		),
+		predicate: "is",
+		confidence: 0.7,
+	},
+	{
+		regex: new RegExp(
+			`${ENGLISH_ENTITY_SUBJECT}[ \\t]+has(?:[ \\t]+(?:a|an|the))?[ \\t]+${ENGLISH_OBJECT_PHRASE}`,
+			"gu",
+		),
+		predicate: "has",
+		confidence: 0.6,
+	},
+	{
+		regex: new RegExp(
+			`${ENGLISH_ENTITY_SUBJECT}[ \\t]+(?:uses?|using|used)(?:[ \\t]+(?:a|an|the))?[ \\t]+${ENGLISH_OBJECT_PHRASE}`,
+			"gu",
+		),
+		predicate: "uses",
+		confidence: 0.6,
+	},
+	{
+		regex: new RegExp(
+			`${ENGLISH_ENTITY_SUBJECT}[ \\t]+works?[ \\t]+(?:at|for|with)[ \\t]+${ENGLISH_OBJECT_PHRASE}`,
+			"gu",
+		),
+		predicate: "works_at",
+		confidence: 0.7,
+	},
+	{
+		regex: new RegExp(
+			`${CJK_LEFT_BOUNDARY}${CJK_SUBJECT_TOKEN}[ \\t]*(?<![但還还認认總总就只可或若雖虽不沒没無无非於于])(?:是|為|为)(?![否的])[ \\t]*${CJK_OBJECT_PHRASE}`,
+			"gu",
+		),
+		predicate: "is",
+		confidence: 0.7,
+	},
+	{
+		regex: new RegExp(
+			`${CJK_LEFT_BOUNDARY}${CJK_SUBJECT_TOKEN}[ \\t]*(?<![沒没無无非所惟只僅仅])(?:有|擁有|拥有|包含|具備|具备)(?![關关效用利待限無无])[ \\t]*${CJK_OBJECT_PHRASE}`,
+			"gu",
+		),
+		predicate: "has",
+		confidence: 0.6,
+	},
+	{
+		regex: new RegExp(
+			`${CJK_LEFT_BOUNDARY}${CJK_SUBJECT_TOKEN}[ \\t]*(?:使用|採用|采用|基於|基于|透過|通过)[ \\t]*${CJK_OBJECT_PHRASE}`,
+			"gu",
+		),
+		predicate: "uses",
+		confidence: 0.6,
+	},
+	{
+		regex: new RegExp(
+			`${CJK_LEFT_BOUNDARY}${CJK_SUBJECT_TOKEN}[ \\t]*(?:任職於|任职于|工作於|工作于|服務於|服务于)[ \\t]*${CJK_OBJECT_PHRASE}`,
+			"gu",
+		),
+		predicate: "works_at",
+		confidence: 0.7,
+	},
+];
 function nowIso(): string {
 	return new Date().toISOString();
 }
@@ -445,10 +538,16 @@ export class EpisodicGraph {
 					break;
 				}
 			}
-			cleanSubject = cleanSubject.replace(/^(?:這個|那個|這項|那項|這些|那些|這|那|此|該)+/, "").trim();
-
 			const isSubjectHan = /\p{Script=Han}/u.test(cleanSubject);
-			if (isSubjectHan && CJK_REJECT_PARTICLES.test(cleanSubject)) return;
+			if (isSubjectHan) {
+				if (
+					CJK_SUBJECT_LEADING_STOP_RE.test(cleanSubject) ||
+					CJK_SUBJECT_TRAILING_STOP_RE.test(cleanSubject) ||
+					CJK_REJECT_PARTICLES.test(cleanSubject)
+				) {
+					return;
+				}
+			}
 			const minSubjectLen = isSubjectHan ? 2 : 3;
 			if (cleanSubject.length < minSubjectLen) return;
 
@@ -457,7 +556,9 @@ export class EpisodicGraph {
 				.replace(/\s+\b(?:and|but|or|because|since|while|when|where|which|that)\b[\s\S]*$/i, "")
 				.trim();
 			cleanObject =
-				cleanObject.split(/[，。！？；、,\r\n!?;]|\.(?=\s|$)|(?:並|且|而且|但是|因為|所以)/u)[0]?.trim() ?? "";
+				cleanObject
+					.split(/[，。！？；、,\r\n!?;]|\.(?=\s|$)|(?:並|并且|且|而且|但是|因為|因为|所以)/u)[0]
+					?.trim() ?? "";
 			cleanObject = cleanObject.replace(/[.,;:!?'"]+$/, "").trim();
 
 			const isObjectHan = /\p{Script=Han}/u.test(cleanObject);
@@ -480,83 +581,11 @@ export class EpisodicGraph {
 			});
 		};
 
-		const isRegex = new RegExp(
-			`${ENGLISH_ENTITY_SUBJECT}[ \\t]+is(?:[ \\t]+(?:a|an|the))?[ \\t]+${ENGLISH_OBJECT_PHRASE}`,
-			"gu",
-		);
-		for (const match of bounded.matchAll(isRegex)) {
-			pushFact(match[1] ?? "", "is", match[2] ?? "", 0.7);
-		}
-
-		const hasRegex = new RegExp(
-			`${ENGLISH_ENTITY_SUBJECT}[ \\t]+has(?:[ \\t]+(?:a|an|the))?[ \\t]+${ENGLISH_OBJECT_PHRASE}`,
-			"gu",
-		);
-		for (const match of bounded.matchAll(hasRegex)) {
-			pushFact(match[1] ?? "", "has", match[2] ?? "", 0.6);
-		}
-
-		const usesRegex = new RegExp(
-			`${ENGLISH_ENTITY_SUBJECT}[ \\t]+(?:uses?|using|used)(?:[ \\t]+(?:a|an|the))?[ \\t]+${ENGLISH_OBJECT_PHRASE}`,
-			"gu",
-		);
-		for (const match of bounded.matchAll(usesRegex)) {
-			pushFact(match[1] ?? "", "uses", match[2] ?? "", 0.6);
-		}
-
-		const worksAtRegex = new RegExp(
-			`${ENGLISH_ENTITY_SUBJECT}[ \\t]+works?[ \\t]+(?:at|for|with)[ \\t]+${ENGLISH_OBJECT_PHRASE}`,
-			"gu",
-		);
-		for (const match of bounded.matchAll(worksAtRegex)) {
-			pushFact(match[1] ?? "", "works_at", match[2] ?? "", 0.7);
-		}
-
-		const cjkPatterns: readonly {
-			readonly regex: RegExp;
-			readonly predicate: string;
-			readonly confidence: number;
-		}[] = [
-			{
-				regex: new RegExp(
-					`${CJK_LEFT_BOUNDARY}${CJK_SUBJECT_TOKEN}[ \\t]*(?<![但還認總就只可或若雖不沒無非])(?:是|為)(?![否的])[ \\t]*${CJK_OBJECT_PHRASE}`,
-					"gu",
-				),
-				predicate: "is",
-				confidence: 0.7,
-			},
-			{
-				regex: new RegExp(
-					`${CJK_LEFT_BOUNDARY}${CJK_SUBJECT_TOKEN}[ \\t]*(?<![沒無非所惟只僅])(?:有|擁有|包含|具備)(?![關效用利待限無])[ \\t]*${CJK_OBJECT_PHRASE}`,
-					"gu",
-				),
-				predicate: "has",
-				confidence: 0.6,
-			},
-			{
-				regex: new RegExp(
-					`${CJK_LEFT_BOUNDARY}${CJK_SUBJECT_TOKEN}[ \\t]*(?:使用|採用|基於|透過)[ \\t]*${CJK_OBJECT_PHRASE}`,
-					"gu",
-				),
-				predicate: "uses",
-				confidence: 0.6,
-			},
-			{
-				regex: new RegExp(
-					`${CJK_LEFT_BOUNDARY}${CJK_SUBJECT_TOKEN}[ \\t]*(?:任職於|工作於|服務於)[ \\t]*${CJK_OBJECT_PHRASE}`,
-					"gu",
-				),
-				predicate: "works_at",
-				confidence: 0.7,
-			},
-		];
-
-		for (const { regex, predicate, confidence } of cjkPatterns) {
+		for (const { regex, predicate, confidence } of FACT_EXTRACTION_PATTERNS) {
 			for (const match of bounded.matchAll(regex)) {
 				pushFact(match[1] ?? "", predicate, match[2] ?? "", confidence);
 			}
 		}
-
 		return facts;
 	}
 	storeGist(gist: Gist, memoryId: string): void {
