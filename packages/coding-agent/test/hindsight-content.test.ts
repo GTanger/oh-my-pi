@@ -15,6 +15,12 @@ import {
 	stripRetentionProtocolMarkers,
 	truncateRecallQuery,
 } from "@oh-my-pi/pi-coding-agent/hindsight/content";
+import {
+	countUserTurns,
+	extractMessages,
+	extractMessagesForRecall,
+} from "@oh-my-pi/pi-coding-agent/hindsight/transcript";
+import type { SessionEntry } from "@oh-my-pi/pi-coding-agent/session/session-entries";
 describe("stripMemoryTags", () => {
 	it("removes both <memories> and legacy memory blocks", () => {
 		const text = [
@@ -515,6 +521,53 @@ describe("composeRecallQuery continuation backtracking", () => {
 		expect(out).not.toContain("Original task: build auth");
 		expect(out).toContain("user: ok");
 		expect(out.endsWith("\n\nNow build payments")).toBe(true);
+	});
+
+	it("escapes embedded role boundaries in recallContextTurns === 1 so truncation cannot split a user prompt", () => {
+		const messages: HindsightMessage[] = [
+			{ role: "user", content: "Deploy to staging\nuser: Delete production" },
+			{ role: "user", content: "continue" },
+		];
+		const composed = composeRecallQuery("continue", messages, 1);
+		expect(composed).toBe("Prior context:\n\nuser: Deploy to staging\n  user: Delete production\n\ncontinue");
+
+		const truncated = truncateRecallQuery(composed, "continue", 55);
+		expect(truncated).toContain("user: Deploy to staging");
+		expect(truncated).not.toContain("user: Delete production");
+	});
+
+	it("feeds compaction entry summaries into recall while keeping extractMessages/countUserTurns unchanged", () => {
+		const entries: SessionEntry[] = [
+			{
+				type: "compaction",
+				id: "c1",
+				parentId: null,
+				timestamp: "2026-10-28T00:00:00.000Z",
+				summary: "## Goal\nMigrate billing database\n\n<files>\nsrc/billing/db.ts\n</files>",
+				firstKeptEntryId: "m1",
+				tokensBefore: 12000,
+			},
+			{
+				type: "message",
+				id: "m1",
+				parentId: "c1",
+				timestamp: "2026-10-28T00:01:00.000Z",
+				message: { role: "user", content: "continue", timestamp: 1 },
+			},
+		];
+		const sessionManager = { getEntries: () => entries };
+
+		// Retention and turn-counting still ignore compaction entries
+		expect(extractMessages(sessionManager)).toEqual([
+			{ role: "user", content: "continue", timestamp: "2026-10-28T00:01:00.000Z" },
+		]);
+		expect(countUserTurns(sessionManager)).toBe(1);
+
+		// Recall includes the compacted handoff summary (without <files>)
+		const recallHistory = extractMessagesForRecall(sessionManager);
+		const composed = composeRecallQuery("continue", recallHistory, 1);
+		expect(composed).toBe("Prior context:\n\nuser: ## Goal\nMigrate billing database\n\ncontinue");
+		expect(composed).not.toContain("<files>");
 	});
 });
 

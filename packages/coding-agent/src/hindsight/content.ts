@@ -59,7 +59,11 @@ export function stripMemoryTags(content: string): string {
  * If `<handoff>` is not present, returns `text` unchanged.
  */
 export function compactHandoffForRecall(text: string): string {
-	if (!/<handoff>/i.test(text)) return text;
+	const hasHandoffTag = /<handoff>/i.test(text);
+	if (!hasHandoffTag && !/<files>/i.test(text)) return text;
+	if (!hasHandoffTag) {
+		return /^\s*##\s+Goal\b/im.test(text) ? text.replace(HANDOFF_FILES_REGEX, "") : text;
+	}
 	let cleaned = text.replace(HANDOFF_PREAMBLE_REGEX, "");
 	cleaned = cleaned.replace(HANDOFF_WRAPPER_REGEX, (_, inner: string) => {
 		return inner.replace(HANDOFF_FILES_REGEX, "");
@@ -120,7 +124,7 @@ export function formatCurrentTime(now: Date = new Date()): string {
  * Slice messages to the last N turns, where a turn boundary is a user message.
  * Returns the trailing tail starting at the (N-th from the end) user message.
  */
-export function sliceLastTurnsByUserBoundary(messages: HindsightMessage[], turns: number): HindsightMessage[] {
+export function sliceLastTurnsByUserBoundary(messages: readonly HindsightMessage[], turns: number): HindsightMessage[] {
 	if (messages.length === 0 || turns <= 0) return [];
 
 	let userTurnsSeen = 0;
@@ -174,14 +178,15 @@ export function composeRecallQuery(
 			if (messages[i].role === "user") {
 				const c = compactHandoffForRecall(stripMemoryTags(messages[i].content)).trim();
 				if (hasSubstantiveContent(c) && !isShortContinuationPrompt(c)) {
-					return `Prior context:\n\nuser: ${c}\n\n${latest}`;
+					const safeContent = c.replace(/\n(?=(?:user|assistant|system|tool): )/g, "\n  ");
+					return `Prior context:\n\nuser: ${safeContent}\n\n${latest}`;
 				}
 			}
 		}
 		return latest;
 	}
 
-	const contextual = sliceLastTurnsByUserBoundary(messages as HindsightMessage[], recallContextTurns);
+	const contextual = sliceLastTurnsByUserBoundary(messages, recallContextTurns);
 	const contextLines: string[] = [];
 	let contextualTrailingUserIndex = -1;
 	for (let i = contextual.length - 1; i >= 0; i--) {

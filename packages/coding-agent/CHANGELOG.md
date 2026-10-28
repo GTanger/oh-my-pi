@@ -4,7 +4,7 @@
 
 ### Fixed
 
-- Fixed recall query composition dropping user task context on concise continuation replies (such as "continue", "ok", or "繼續") by backtracking to the most recent substantive user turn, stripping verbose `<files>` blocks and system preambles from `<handoff>` messages, and falling back to earlier context or truncated user turns in `truncateRecallQuery` when trailing assistant messages exceed the character budget.
+- Fixed recall query composition to retain prior user or compaction handoff context when the latest prompt is a short continuation reply ([#17239](https://github.com/can1357/oh-my-pi/pull/17239) by [@GTanger](https://github.com/GTanger)).
 
 ## [18.13.2] - 2026-10-27
 
