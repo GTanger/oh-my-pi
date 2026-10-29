@@ -2,6 +2,10 @@
 
 ## [Unreleased]
 
+### Fixed
+
+- Fixed `sanitizeContent` persisting injected prompt/memory wrapper tags (`<system-reminder>`, `<memories>`, `<private>`) and unredacted live credentials to SQLite and disk blobs ([#17425](https://github.com/can1357/oh-my-pi/pull/17425) by [@GTanger](https://github.com/GTanger))
+
 ## [18.13.3] - 2026-10-28
 
 ### Changed

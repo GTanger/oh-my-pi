@@ -17,6 +17,17 @@ export interface BlobMetadata {
 	entropy?: number;
 }
 
+export interface SanitizeMetadata {
+	blob_ref?: string;
+	extraction_reason?: "data_uri" | "size_cap" | "high_entropy";
+	original_size?: number;
+	sha256?: string;
+	mime?: string;
+	entropy?: number;
+	stripped_tags?: boolean;
+	redacted_secrets?: string[];
+}
+
 export function blobRoot(env: NodeJS.ProcessEnv = process.env): string {
 	return env.MNEMOPI_BLOB_DIR && env.MNEMOPI_BLOB_DIR.length > 0
 		? env.MNEMOPI_BLOB_DIR
@@ -69,10 +80,126 @@ export function storeBlob(rawBytes: Uint8Array): string {
 	if (!existsSync(blobPath)) writeFileSync(blobPath, rawBytes);
 	return sha256;
 }
+const INJECTED_TAG_NAMES = [
+	"memories",
+	"mental_models",
+	"hindsight_memories",
+	"relevant_memories",
+	"system-reminder",
+	"private",
+];
 
-export function sanitizeContent(content: string): [sanitizedContent: string, blobMetadata: BlobMetadata] {
-	const originalSize = Buffer.byteLength(content, "utf8");
+const INJECTED_TAGS_RE = new RegExp(
+	INJECTED_TAG_NAMES.map(tag => `<${tag}\\b[^>]*>(?:(?!(?:<${tag}\\b|<\\/${tag}>))[\\s\\S])*?<\\/${tag}>`).join("|"),
+	"gi",
+);
 
+const UNCLOSED_INJECTED_TAG_RE = new RegExp(`<(?:${INJECTED_TAG_NAMES.join("|")})\\b[^>]*>[\\s\\S]*$`, "i");
+
+const ORPHAN_CLOSING_TAG_RE = new RegExp(`<\\/(?:${INJECTED_TAG_NAMES.join("|")})\\s*>`, "gi");
+
+export function stripInjectedMemoryTags(content: string): { content: string; stripped: boolean } {
+	let stripped = false;
+	let current = content;
+	while (true) {
+		let passMatched = false;
+		current = current.replace(INJECTED_TAGS_RE, () => {
+			passMatched = true;
+			stripped = true;
+			return "";
+		});
+		if (!passMatched) break;
+	}
+
+	const withoutUnclosed = current.replace(UNCLOSED_INJECTED_TAG_RE, () => {
+		stripped = true;
+		return "";
+	});
+	const withoutOrphan = withoutUnclosed.replace(ORPHAN_CLOSING_TAG_RE, () => {
+		stripped = true;
+		return "";
+	});
+
+	if (!stripped) {
+		return { content, stripped: false };
+	}
+
+	const cleaned = withoutOrphan.replace(/\n{3,}/g, "\n\n").trim();
+	return { content: cleaned, stripped: true };
+}
+
+const CREDENTIAL_RULES: Array<{
+	type: string;
+	pattern: RegExp;
+	replacement: string;
+}> = [
+	{
+		type: "pem_private_key",
+		pattern:
+			/-----BEGIN (?:RSA |OPENSSH |EC |DSA |ENCRYPTED )?PRIVATE KEY-----[\s\S]*?-----END (?:RSA |OPENSSH |EC |DSA |ENCRYPTED )?PRIVATE KEY-----|-----BEGIN (?:RSA |OPENSSH |EC |DSA |ENCRYPTED )?PRIVATE KEY-----[A-Za-z0-9+/=\r\n\t -]*/g,
+		replacement: "[REDACTED_PRIVATE_KEY]",
+	},
+	{
+		type: "openai_anthropic_key",
+		pattern: /\bsk-(?:proj|ant-api\d*|live)-[A-Za-z0-9_-]{20,}\b|\bsk-[A-Za-z0-9]{36,}\b/g,
+		replacement: "[REDACTED_API_KEY]",
+	},
+	{
+		type: "github_pat",
+		pattern: /\b(?:gh[pousr]_[A-Za-z0-9]{30,}|github_pat_[A-Za-z0-9_]{30,})\b/g,
+		replacement: "[REDACTED_GITHUB_TOKEN]",
+	},
+	{
+		type: "google_api_key",
+		pattern: /\bAIzaSy[A-Za-z0-9_-]{33}\b/g,
+		replacement: "[REDACTED_GOOGLE_KEY]",
+	},
+	{
+		type: "aws_access_key",
+		pattern: /\bAKIA(?!IOSFODNN7EXAMPLE\b)[0-9A-Z]{16}\b/g,
+		replacement: "[REDACTED_AWS_KEY]",
+	},
+	{
+		type: "slack_or_gitlab_token",
+		pattern: /\b(?:xox[baprs]-[0-9]{8,}-[0-9A-Za-z-]{16,}|glpat-[A-Za-z0-9_-]{20,})\b/g,
+		replacement: "[REDACTED_TOKEN]",
+	},
+	{
+		type: "auth_bearer_basic",
+		pattern: /\b(Authorization\s*:\s*(?:Bearer|Basic)\s+)[^\s"',;]{8,}/gi,
+		replacement: "$1[REDACTED_AUTH]",
+	},
+	{
+		type: "basic_auth_url",
+		pattern: /\b(https?:\/\/[^/\s:@]+:)([^@\s/]{6,})(@[^\s"'/]+)/gi,
+		replacement: "$1[REDACTED_PASSWORD]$3",
+	},
+];
+
+export function scrubLiveCredentials(content: string): { content: string; matchedTypes: string[] } {
+	let current = content;
+	const matchedTypes: string[] = [];
+
+	for (const rule of CREDENTIAL_RULES) {
+		rule.pattern.lastIndex = 0;
+		let matched = false;
+		current = current.replace(rule.pattern, (...args) => {
+			matched = true;
+			if (rule.replacement === "$1[REDACTED_AUTH]") {
+				return `${args[1] as string}[REDACTED_AUTH]`;
+			}
+			if (rule.replacement === "$1[REDACTED_PASSWORD]$3") {
+				return `${args[1] as string}[REDACTED_PASSWORD]${args[3] as string}`;
+			}
+			return rule.replacement;
+		});
+		if (matched) matchedTypes.push(rule.type);
+	}
+
+	return { content: current, matchedTypes };
+}
+
+export function sanitizeContent(content: string): [sanitizedContent: string, meta: SanitizeMetadata] {
 	if (isDataUri(content)) {
 		const parsed = parseDataUri(content);
 		if (parsed !== null) {
@@ -91,37 +218,55 @@ export function sanitizeContent(content: string): [sanitizedContent: string, blo
 		}
 	}
 
-	if (originalSize > SIZE_HARD_CAP) {
-		const rawBytes = Buffer.from(content, "utf8");
+	const meta: SanitizeMetadata = {};
+	let text = content;
+
+	const tagResult = stripInjectedMemoryTags(text);
+	if (tagResult.stripped) {
+		text = tagResult.content;
+		meta.stripped_tags = true;
+	}
+
+	const credResult = scrubLiveCredentials(text);
+	if (credResult.matchedTypes.length > 0) {
+		text = credResult.content;
+		meta.redacted_secrets = credResult.matchedTypes;
+	}
+
+	const textByteSize = Buffer.byteLength(text, "utf8");
+	if (textByteSize > SIZE_HARD_CAP) {
+		const rawBytes = Buffer.from(text, "utf8");
 		const sha256 = storeBlob(rawBytes);
 		const blobRef = `blob://sha256/${sha256}`;
 		return [
-			`[Large content extracted: ${originalSize.toLocaleString("en-US")} bytes → ${blobRef}]`,
+			`[Large content extracted: ${textByteSize.toLocaleString("en-US")} bytes → ${blobRef}]`,
 			{
+				...meta,
 				blob_ref: blobRef,
-				original_size: originalSize,
+				original_size: textByteSize,
 				extraction_reason: "size_cap",
 			},
 		];
 	}
 
-	if (originalSize > SIZE_BASE64_CHECK && looksLikeBase64Blob(content)) {
-		const rawBytes = Buffer.from(content, "utf8");
+	if (textByteSize > SIZE_BASE64_CHECK && looksLikeBase64Blob(text)) {
+		const rawBytes = Buffer.from(text, "utf8");
 		const sha256 = storeBlob(rawBytes);
-		const entropy = Math.round(shannonEntropy(content) * 100) / 100;
+		const entropy = Math.round(shannonEntropy(text) * 100) / 100;
 		const blobRef = `blob://sha256/${sha256}`;
 		return [
-			`[Encoded content extracted: ${originalSize.toLocaleString("en-US")} bytes, entropy ${entropy.toFixed(1)} bits/char → ${blobRef}]`,
+			`[Encoded content extracted: ${textByteSize.toLocaleString("en-US")} bytes, entropy ${entropy.toFixed(1)} bits/char → ${blobRef}]`,
 			{
+				...meta,
 				blob_ref: blobRef,
-				original_size: originalSize,
+				original_size: textByteSize,
 				entropy,
 				extraction_reason: "high_entropy",
 			},
 		];
 	}
 
-	return [content, {}];
+	return [text, meta];
 }
 function isValidBase64(payload: string): boolean {
 	if (payload.length % 4 !== 0) return false;

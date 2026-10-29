@@ -9,8 +9,10 @@ import {
 	looksLikeBase64Blob,
 	parseDataUri,
 	sanitizeContent,
+	scrubLiveCredentials,
 	shannonEntropy,
 	storeBlob,
+	stripInjectedMemoryTags,
 } from "@oh-my-pi/pi-mnemopi/core/content-sanitizer";
 
 const ORIGINAL_BLOB_DIR = process.env.MNEMOPI_BLOB_DIR;
@@ -126,5 +128,118 @@ describe("sanitize_content", () => {
 		expect(meta.extraction_reason).toBe("high_entropy");
 		expect(meta.entropy).toBeGreaterThan(5.0);
 		expect(sanitizeContent(prose)).toEqual([prose, {}]);
+	});
+});
+
+describe("sanitizeContent tag stripping and credential scrubbing", () => {
+	it("strips injected prompt and memory tags", () => {
+		const text = `
+Header text
+<system-reminder>
+Sensitive injected prompt details
+</system-reminder>
+
+Middle content
+<memories>
+Recalled memory block
+</memories>
+
+<private>
+User secret notes
+</private>
+Tail content
+`;
+		const { content, stripped } = stripInjectedMemoryTags(text);
+		expect(stripped).toBe(true);
+		expect(content).not.toContain("<system-reminder>");
+		expect(content).not.toContain("Sensitive injected prompt details");
+		expect(content).not.toContain("<memories>");
+		expect(content).not.toContain("<private>");
+		expect(content).toContain("Header text");
+		expect(content).toContain("Middle content");
+		expect(content).toContain("Tail content");
+
+		const [sanitized, meta] = sanitizeContent(text);
+		expect(meta.stripped_tags).toBe(true);
+		expect(sanitized).toBe(content);
+	});
+
+	it("scrubs live credentials and tracks matched types", () => {
+		const pemHeader = `-----BEGIN ${"RSA PRIVATE"} KEY-----`;
+		const pemFooter = `-----END ${"RSA PRIVATE"} KEY-----`;
+		const pemKey = `${pemHeader}\nMIIEowIBAAKCAQEA0Y1+exampleFakeKeyMaterialForTestingOnly...\n${pemFooter}`;
+		const sample = [
+			pemKey,
+			`API key: ${"sk-proj"}-1234567890abcdefghijklmnopqrstuvwxyz`,
+			`GitHub: ${"ghp"}_1234567890abcdefghijklmnopqrstuvwxyz1234`,
+			`Google: ${"AIzaSy"}A1B2C3D4E5F6G7H8I9J0K1L2M3N4O5P6Q`,
+			`AWS: ${"AKIA"}1234567890ABCDEF`,
+			`Slack: ${"xox" + "b"}-12345678-abcdefghijklmnop`,
+			`GitLab: ${"glpat"}-1234567890abcdefghij`,
+			`Auth: Authorization: Bearer ${"eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9"}`,
+			`DB: https://admin:${"s3cr3tPass"}@db.internal:5432/app`,
+		].join("\n");
+
+		const { content, matchedTypes } = scrubLiveCredentials(sample);
+		expect(matchedTypes).toEqual([
+			"pem_private_key",
+			"openai_anthropic_key",
+			"github_pat",
+			"google_api_key",
+			"aws_access_key",
+			"slack_or_gitlab_token",
+			"auth_bearer_basic",
+			"basic_auth_url",
+		]);
+		expect(content).toContain("[REDACTED_PRIVATE_KEY]");
+		expect(content).toContain("API key: [REDACTED_API_KEY]");
+		expect(content).toContain("GitHub: [REDACTED_GITHUB_TOKEN]");
+		expect(content).toContain("Google: [REDACTED_GOOGLE_KEY]");
+		expect(content).toContain("AWS: [REDACTED_AWS_KEY]");
+		expect(content).toContain("Slack: [REDACTED_TOKEN]");
+		expect(content).toContain("GitLab: [REDACTED_TOKEN]");
+		expect(content).toContain("Auth: Authorization: Bearer [REDACTED_AUTH]");
+		expect(content).toContain("DB: https://admin:[REDACTED_PASSWORD]@db.internal:5432/app");
+
+		const [sanitized, meta] = sanitizeContent(sample);
+		expect(meta.redacted_secrets).toEqual(matchedTypes);
+		expect(sanitized).toBe(content);
+	});
+
+	it("preserves benign text, URLs, and documentation placeholders", () => {
+		const benign = [
+			"Documentation placeholder: AKIAIOSFODNN7EXAMPLE",
+			"Example OpenAI key: sk-placeholder",
+			"Config template: API_KEY=YOUR_API_KEY_HERE",
+			"Public website: https://example.com/api/v1/resource",
+			"Regular text discussing authentication patterns.",
+		].join("\n");
+
+		const { content: strippedText, stripped } = stripInjectedMemoryTags(benign);
+		expect(stripped).toBe(false);
+		expect(strippedText).toBe(benign);
+
+		const { content: scrubbedText, matchedTypes } = scrubLiveCredentials(benign);
+		expect(matchedTypes).toHaveLength(0);
+		expect(scrubbedText).toBe(benign);
+
+		const [sanitized, meta] = sanitizeContent(benign);
+		expect(sanitized).toBe(benign);
+		expect(meta).toEqual({});
+	});
+
+	it("handles nested/unclosed injected tags, unclosed PEM keys, and scrubs before blob extraction", () => {
+		useTempBlobDir();
+		const nested =
+			"Before\n<private>outer <private>inner</private> leaked</private>\n<system-reminder>truncated tail";
+		const strippedRes = stripInjectedMemoryTags(nested);
+		expect(strippedRes.stripped).toBe(true);
+		expect(strippedRes.content).toBe("Before");
+
+		const unclosedPem = `Key:\n-----BEGIN ${"ENCRYPTED PRIVATE"} KEY-----\nMIIFDjBABgkqhkiG9w0BBQ0wMzAbBgkqhkiG9w0BBQwwDgQISecretMaterial`;
+		const scrubbedPem = scrubLiveCredentials(unclosedPem);
+		expect(scrubbedPem.matchedTypes).toEqual(["pem_private_key"]);
+		expect(scrubbedPem.content).toBe("Key:\n[REDACTED_PRIVATE_KEY]");
+		expect(scrubbedPem.content).not.toContain("MIIFDj");
 	});
 });
