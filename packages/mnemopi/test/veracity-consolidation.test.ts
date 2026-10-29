@@ -32,4 +32,26 @@ describe("VeracityConsolidator", () => {
 			consolidator.close();
 		}
 	});
+
+	it("does not inflate mention_count or confidence on duplicate source ID", () => {
+		const consolidator = new VeracityConsolidator(":memory:");
+		try {
+			const initial = consolidator.consolidateFact("Alice", "likes", "tea", "stated", "m1");
+			expect(initial.mention_count).toBe(1);
+			const initialConfidence = initial.confidence;
+
+			const dupe = consolidator.consolidateFact("Alice", "likes", "tea", "unknown", "m1");
+			expect(dupe.mention_count).toBe(1);
+			expect(dupe.confidence).toBe(initialConfidence);
+			expect(dupe.veracity).toBe("stated");
+			expect(dupe.sources).toEqual(["m1"]);
+
+			const distinct = consolidator.consolidateFact("Alice", "likes", "tea", "stated", "m2");
+			expect(distinct.mention_count).toBe(2);
+			expect(distinct.confidence).toBeGreaterThan(initialConfidence);
+			expect(distinct.sources).toEqual(["m1", "m2"]);
+		} finally {
+			consolidator.close();
+		}
+	});
 });

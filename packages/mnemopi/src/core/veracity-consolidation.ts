@@ -293,18 +293,23 @@ export class VeracityConsolidator {
 			const now = nowIso();
 
 			if (existing !== null) {
-				const newConfidence = this.bayesianUpdate(existing.confidence, veracity);
-				const newCount = existing.mention_count + 1;
 				const sources = parseSources(existing.sources_json);
-				if (source !== undefined && source !== null && source !== "" && !sources.includes(source))
-					sources.push(source);
+				const hasSource = source !== undefined && source !== null && source !== "";
+				const isDuplicateSource = hasSource && sources.includes(source);
+				if (hasSource && !isDuplicateSource) sources.push(source);
+				const newConfidence = isDuplicateSource
+					? existing.confidence
+					: this.bayesianUpdate(existing.confidence, veracity);
+				const newCount = isDuplicateSource ? existing.mention_count : existing.mention_count + 1;
+				const nextVeracity = isDuplicateSource ? existing.veracity : veracity;
+				const nextLastSeen = isDuplicateSource ? existing.last_seen : now;
 				this.conn
 					.query(`
 						UPDATE consolidated_facts
 						SET confidence = ?, mention_count = ?, last_seen = ?, sources_json = ?, veracity = ?, updated_at = ?
 						WHERE id = ?
 					`)
-					.run(newConfidence, newCount, now, JSON.stringify(sources), veracity, now, existing.id);
+					.run(newConfidence, newCount, nextLastSeen, JSON.stringify(sources), nextVeracity, now, existing.id);
 				return {
 					subject,
 					predicate,
@@ -312,9 +317,9 @@ export class VeracityConsolidator {
 					confidence: newConfidence,
 					mention_count: newCount,
 					first_seen: existing.first_seen,
-					last_seen: now,
+					last_seen: nextLastSeen,
 					sources,
-					veracity,
+					veracity: nextVeracity,
 					superseded: existing.superseded_by !== null,
 					id: existing.id,
 				};

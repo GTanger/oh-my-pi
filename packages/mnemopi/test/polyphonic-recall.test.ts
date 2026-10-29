@@ -256,4 +256,89 @@ describe("PolyphonicRecallEngine", () => {
 			closeQuietly(beam.db);
 		}
 	});
+
+	it("matches a consolidated fact with a CJK subject in factVoice for unspaced CJK query", () => {
+		const beam = makeBeam();
+		try {
+			const engine = new PolyphonicRecallEngine({
+				db: beam.db,
+				sessionId: beam.sessionId,
+				channelId: beam.channelId,
+			});
+			const timestamp = new Date().toISOString();
+			insertWorking(beam, "wm-cjk-tsmc", "台積電最新營收超過預期", 0.9, timestamp);
+			beam.db.run(
+				`INSERT INTO consolidated_facts
+					(id, subject, predicate, object, confidence, mention_count, first_seen, last_seen, sources_json, veracity)
+					VALUES ('cf_tsmc_rev', '台積電', '營收', '超過預期', 0.95, 3, ?, ?, ?, 'likely_true')`,
+				[timestamp, timestamp, JSON.stringify(["wm-cjk-tsmc"])],
+			);
+
+			const factHits = engine.factVoice("檢查台積電的營收表現");
+			expect(factHits.map(hit => hit.memoryId)).toContain("wm-cjk-tsmc");
+		} finally {
+			closeQuietly(beam.db);
+		}
+	});
+
+	it("activates temporalVoice on CJK temporal queries and deduplicates near-identical CJK memories in diversityRerank", () => {
+		const beam = makeBeam();
+		try {
+			const engine = new PolyphonicRecallEngine({
+				db: beam.db,
+				sessionId: beam.sessionId,
+				channelId: beam.channelId,
+			});
+			const timestamp = new Date().toISOString();
+			insertWorking(beam, "wm-cjk-dep", "最近的部署紀錄顯示一切正常", 0.8, timestamp);
+
+			const temporalHits = engine.temporalVoice("最近的部署紀錄");
+			expect(temporalHits.map(hit => hit.memoryId)).toContain("wm-cjk-dep");
+
+			insertWorking(beam, "wm-cjk-rep1", "台積電法說會公布最新季度合併營收財報與全年資本支出規劃", 0.9, timestamp);
+			insertWorking(beam, "wm-cjk-rep2", "台積電法說會公布最新季度合併營收財報與全年資本支出目標", 0.85, timestamp);
+
+			const candidates = new Map([
+				[
+					"wm-cjk-rep1",
+					{
+						memoryId: "wm-cjk-rep1",
+						combinedScore: 0.05,
+						voiceScores: { hybrid: 0.05 },
+						metadata: {},
+					},
+				],
+				[
+					"wm-cjk-rep2",
+					{
+						memoryId: "wm-cjk-rep2",
+						combinedScore: 0.04,
+						voiceScores: { hybrid: 0.04 },
+						metadata: {},
+					},
+				],
+			]);
+
+			const reranked = engine.diversityRerank(candidates, 10, candidate => {
+				const row = beam.db
+					.query("SELECT id, content FROM working_memory WHERE id = ?")
+					.get(candidate.memoryId) as { id: string; content: string } | null;
+				if (!row) return null;
+				return {
+					id: row.id,
+					content: row.content,
+					score: candidate.combinedScore,
+					combined_score: candidate.combinedScore,
+					voice_scores: candidate.voiceScores,
+					metadata: candidate.metadata,
+					tier: "working",
+					tier_label: "working",
+				};
+			});
+
+			expect(reranked.map(r => r.id)).toEqual(["wm-cjk-rep1"]);
+		} finally {
+			closeQuietly(beam.db);
+		}
+	});
 });

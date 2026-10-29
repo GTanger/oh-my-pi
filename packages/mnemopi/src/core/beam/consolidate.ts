@@ -200,6 +200,28 @@ function asRows(value: unknown): Row[] {
 function escapeLike(value: string): string {
 	return value.replace(/[\\%_]/g, m => `\\${m}`);
 }
+const CJK_CHAR_RE = /[\p{Script=Han}\p{Script=Hiragana}\p{Script=Katakana}\p{Script=Hangul}]/u;
+const CJK_PARTICLE_SPLIT_RE =
+	/[的了在是和與及或對將把被從向由給為於並而但卻又也還都只就才已曾正要會能可讓使比跟同按依據關]/u;
+const CJK_STOP_SEGMENTS = new Set([
+	"什麼",
+	"如何",
+	"怎麼",
+	"哪些",
+	"哪個",
+	"為什麼",
+	"是否",
+	"可以",
+	"一個",
+	"這個",
+	"那個",
+	"我們",
+	"你們",
+	"他們",
+	"檢查",
+	"查看",
+	"查詢",
+]);
 
 function makeQuestionTokens(query: string): string[] {
 	const stop = new Set([
@@ -235,10 +257,39 @@ function makeQuestionTokens(query: string): string[] {
 		"who",
 		"with",
 	]);
-	return [...query.toLowerCase().matchAll(/[\p{L}\p{N}_.-]+/gu)]
+	const rawTokens = [...query.toLowerCase().matchAll(/[\p{L}\p{N}_.-]+/gu)]
 		.map(m => m[0] ?? "")
-		.filter(token => token.length > 1 && !stop.has(token))
-		.slice(0, 8);
+		.filter(token => token.length > 1 && !stop.has(token) && !CJK_STOP_SEGMENTS.has(token));
+
+	const primary: string[] = [];
+	const shingles: string[] = [];
+	const seen = new Set<string>();
+
+	const pushUnique = (target: string[], token: string): void => {
+		if (!seen.has(token) && !CJK_STOP_SEGMENTS.has(token)) {
+			seen.add(token);
+			target.push(token);
+		}
+	};
+
+	for (const token of rawTokens) {
+		if (CJK_CHAR_RE.test(token) && token.length > 2) {
+			const subsegs = token.split(CJK_PARTICLE_SPLIT_RE);
+			for (const seg of subsegs) {
+				if (seg.length < 2 || CJK_STOP_SEGMENTS.has(seg)) continue;
+				if (seg.length <= 4) pushUnique(primary, seg);
+				if (seg.length >= 3) {
+					for (let i = 0; i <= seg.length - 2; i++) pushUnique(shingles, seg.slice(i, i + 2));
+					for (let i = 0; i <= seg.length - 3; i++) pushUnique(shingles, seg.slice(i, i + 3));
+				}
+			}
+			pushUnique(shingles, token);
+		} else {
+			pushUnique(primary, token);
+		}
+	}
+
+	return [...primary, ...shingles].slice(0, 8);
 }
 
 function emitEvent(
