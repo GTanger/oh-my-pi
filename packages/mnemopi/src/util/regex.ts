@@ -1,8 +1,12 @@
 const RECALL_TOKEN_RE = /[a-z0-9][a-z0-9_.:/+-]*/g;
-const CJK_RE = /[\p{Script=Han}\p{Script=Hiragana}\p{Script=Katakana}\p{Script=Hangul}]/u;
-export const CJK_RUN_RE = /[\p{Script=Han}\p{Script=Hiragana}\p{Script=Katakana}\p{Script=Hangul}]{2,}/gu;
-const NON_CJK_TOKEN_RUN_RE = /[a-z0-9][a-z0-9_.-]*/gi;
+const CJK_RE = /[\p{Script=Han}\p{Script=Hiragana}\p{Script=Katakana}\p{Script=Hangul}\u30FC\u3005]/u;
+/** Regular expression matching contiguous runs of 2+ CJK characters, prolong marks, or iteration marks. */
+export const CJK_RUN_RE = /[\p{Script=Han}\p{Script=Hiragana}\p{Script=Katakana}\p{Script=Hangul}\u30FC\u3005]{2,}/gu;
+const NON_CJK_TOKEN_RUN_RE =
+	/(?:(?![\p{Script=Han}\p{Script=Hiragana}\p{Script=Katakana}\p{Script=Hangul}\u30FC\u3005])[\p{L}\p{N}])(?:(?![\p{Script=Han}\p{Script=Hiragana}\p{Script=Katakana}\p{Script=Hangul}\u30FC\u3005])[\p{L}\p{N}_-])*/gu;
+/** Regular expression for splitting CJK clauses on grammatical particles and connective markers. */
 export const CJK_PARTICLE_SPLIT_RE = /[的了嗎呢吧啊呀嘛和與及或對將把被從向由給為於並而但卻又也還只就才已曾讓跟]/u;
+/** High-frequency CJK stop segments and question pronouns excluded from indexing and candidate shingles. */
 export const CJK_STOP_SEGMENTS: ReadonlySet<string> = new Set([
 	"什麼",
 	"什么",

@@ -8,12 +8,14 @@ import { EpisodicGraph, extractProperNouns } from "./episodic-graph";
 import { STOP_WORDS } from "./synonyms";
 import { VeracityConsolidator } from "./veracity-consolidation";
 import {
+	CJK_PARTICLE_SPLIT_RE,
 	CJK_STOP_SEGMENTS,
 	cjkCodePointShingles,
 	codePointLength,
 	expandCjkCandidateSegments,
 	hasCjk,
 	splitMixedScriptToken,
+	stripCjkQuestionAffixes,
 } from "../util/regex";
 
 export type PolyphonicVoice = "hybrid" | "vector" | "graph" | "fact" | "temporal";
@@ -245,9 +247,19 @@ function factSubjectCandidates(query: string): string[] {
 		const minLen = isCjk ? 2 : 3;
 		if (isContent && wordLen >= minLen && !CJK_STOP_SEGMENTS.has(word)) seen.add(word);
 		if (isCjk) {
-			const { nonCjk } = splitMixedScriptToken(word);
+			const { nonCjk, cjkRuns } = splitMixedScriptToken(word);
 			for (const latin of nonCjk) {
 				if (latin.length >= 3 && !STOP_WORDS.has(latin)) seen.add(latin);
+			}
+			if (nonCjk.length > 0 && cjkRuns.length > 0) {
+				const strippedWord = stripCjkQuestionAffixes(word);
+				for (const seg of [word, strippedWord]) {
+					if (codePointLength(seg) <= 12) seen.add(seg);
+				}
+				for (const sub of strippedWord.split(CJK_PARTICLE_SPLIT_RE)) {
+					const strippedSub = stripCjkQuestionAffixes(sub);
+					if (codePointLength(strippedSub) >= 2 && codePointLength(strippedSub) <= 12) seen.add(strippedSub);
+				}
 			}
 			if (wordLen >= 2) expandCjkCandidateSegments(word, seen);
 		}
@@ -295,34 +307,19 @@ function anchorTime(queryTime: string | Date | null | undefined): number | null 
 	return Number.isFinite(parsed) ? parsed : null;
 }
 
+const CJK_TEMPORAL_RE =
+	/(?:昨天|昨日|今天|今日|最近|近期|最新|這週|本週|上週|上周|本周|这周|這個月|上個月|上个月|这个月|之前|先前|以前|何時|什麼時候|何时|什么时候|剛剛|剛才|刚刚|刚才|過去|过去|現在|现在|目前)/u;
+
 function looksTemporal(query: string): boolean {
 	const lower = query.toLowerCase();
-	return [
-		"yesterday",
-		"today",
-		"recent",
-		"last",
-		"latest",
-		"this week",
-		"this month",
-		"ago",
-		"before",
-		"昨天",
-		"昨日",
-		"今天",
-		"今日",
-		"最近",
-		"近期",
-		"最新",
-		"這週",
-		"本週",
-		"上週",
-		"這個月",
-		"上個月",
-		"之前",
-		"先前",
-		"以前",
-	].some(keyword => lower.includes(keyword));
+	if (
+		["yesterday", "today", "recent", "last", "latest", "this week", "this month", "ago", "before"].some(keyword =>
+			lower.includes(keyword),
+		)
+	) {
+		return true;
+	}
+	return CJK_TEMPORAL_RE.test(query);
 }
 
 export class PolyphonicRecallEngine {

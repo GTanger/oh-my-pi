@@ -258,7 +258,7 @@ describe("PolyphonicRecallEngine", () => {
 		}
 	});
 
-	it("matches consolidated facts with 3-char, 4-char, particle-bearing, and supplementary Han CJK subjects in factVoice and default memoriaRetrieve", () => {
+	it("matches consolidated facts with 3-char, 4-char, particle-bearing, supplementary Han, and mixed-script CJK subjects in factVoice", () => {
 		const beam = makeBeam();
 		try {
 			const engine = new PolyphonicRecallEngine({
@@ -271,6 +271,7 @@ describe("PolyphonicRecallEngine", () => {
 			insertWorking(beam, "wm-cjk-pku", "北京大學排名位居前列", 0.9, timestamp);
 			insertWorking(beam, "wm-cjk-tokyo", "東京都今日天氣晴朗", 0.9, timestamp);
 			insertWorking(beam, "wm-cjk-extb", "𠮷𠀋的專案紀錄已完成", 0.9, timestamp);
+			insertWorking(beam, "wm-cjk-hanoi", "HàNội支援CJK的進度已更新", 0.9, timestamp);
 			beam.db.run(
 				`INSERT INTO consolidated_facts
 					(id, subject, predicate, object, confidence, mention_count, first_seen, last_seen, sources_json, veracity)
@@ -278,7 +279,8 @@ describe("PolyphonicRecallEngine", () => {
 					('cf_tsmc_rev', '台積電', '營收', '超過預期', 0.95, 3, ?, ?, ?, 'likely_true'),
 					('cf_pku_rank', '北京大學', '排名', '前列', 0.95, 2, ?, ?, ?, 'likely_true'),
 					('cf_tokyo_weather', '東京都', '天氣', '晴朗', 0.95, 2, ?, ?, ?, 'likely_true'),
-					('cf_extb_record', '𠮷𠀋', '狀態', '已完成', 0.95, 2, ?, ?, ?, 'likely_true')`,
+					('cf_extb_record', '𠮷𠀋', '狀態', '已完成', 0.95, 2, ?, ?, ?, 'likely_true'),
+					('cf_hanoi_support', 'HàNội支援CJK', '進度', '已更新', 0.95, 2, ?, ?, ?, 'likely_true')`,
 				[
 					timestamp,
 					timestamp,
@@ -292,8 +294,35 @@ describe("PolyphonicRecallEngine", () => {
 					timestamp,
 					timestamp,
 					JSON.stringify(["wm-cjk-extb"]),
+					timestamp,
+					timestamp,
+					JSON.stringify(["wm-cjk-hanoi"]),
 				],
 			);
+			expect(engine.factVoice("檢查台積電的營收表現").map(hit => hit.memoryId)).toContain("wm-cjk-tsmc");
+			expect(engine.factVoice("請問北京大學的排名").map(hit => hit.memoryId)).toContain("wm-cjk-pku");
+			expect(engine.factVoice("東京都的天氣如何").map(hit => hit.memoryId)).toContain("wm-cjk-tokyo");
+			expect(engine.factVoice("查詢𠮷𠀋的專案紀錄").map(hit => hit.memoryId)).toContain("wm-cjk-extb");
+			expect(engine.factVoice("查詢HàNội支援CJK的進度").map(hit => hit.memoryId)).toContain("wm-cjk-hanoi");
+
+			// Also verify fact voice surfaces via engine.recall
+			process.env.MNEMOPI_VOICE_VECTOR = "0";
+			process.env.MNEMOPI_VOICE_GRAPH = "0";
+			process.env.MNEMOPI_VOICE_TEMPORAL = "0";
+			const recalled = engine.recall("查詢HàNội支援CJK的進度", null, 5);
+			expect(recalled.map(r => r.id)).toContain("wm-cjk-hanoi");
+			expect(recalled.find(r => r.id === "wm-cjk-hanoi")?.voice_scores.fact).toBeGreaterThan(0);
+		} finally {
+			delete process.env.MNEMOPI_VOICE_VECTOR;
+			delete process.env.MNEMOPI_VOICE_GRAPH;
+			delete process.env.MNEMOPI_VOICE_TEMPORAL;
+			closeQuietly(beam.db);
+		}
+	});
+
+	it("classifies CJK queries as IE ability and routes them through makeQuestionTokens in memoriaRetrieve", () => {
+		const beam = makeBeam();
+		try {
 			beam.db.run(
 				`INSERT INTO memoria_facts
 					(session_id, message_idx, fact_type, key, value, context_snippet, importance, source_memory_id)
@@ -303,11 +332,6 @@ describe("PolyphonicRecallEngine", () => {
 					(?, 2, 'entity', 'postmortem', 'unrelated incident note', 'postmortem review', 0.99, 'wm-cjk-tokyo')`,
 				[beam.sessionId, beam.sessionId, beam.sessionId],
 			);
-
-			expect(engine.factVoice("檢查台積電的營收表現").map(hit => hit.memoryId)).toContain("wm-cjk-tsmc");
-			expect(engine.factVoice("請問北京大學的排名").map(hit => hit.memoryId)).toContain("wm-cjk-pku");
-			expect(engine.factVoice("東京都的天氣如何").map(hit => hit.memoryId)).toContain("wm-cjk-tokyo");
-			expect(engine.factVoice("查詢𠮷𠀋的專案紀錄").map(hit => hit.memoryId)).toContain("wm-cjk-extb");
 
 			const defaultMemoria = memoriaRetrieve(beam, "請問北京大學的排名");
 			expect(defaultMemoria.ability).toBe("IE");
@@ -321,7 +345,7 @@ describe("PolyphonicRecallEngine", () => {
 		}
 	});
 
-	it("activates temporalVoice on CJK temporal queries and deduplicates near-identical CJK memories while keeping distinct mixed-script memories in diversityRerank", () => {
+	it("activates temporalVoice on both traditional and simplified CJK temporal queries", () => {
 		const beam = makeBeam();
 		try {
 			const engine = new PolyphonicRecallEngine({
@@ -330,23 +354,49 @@ describe("PolyphonicRecallEngine", () => {
 				channelId: beam.channelId,
 			});
 			const timestamp = new Date().toISOString();
-			insertWorking(beam, "wm-cjk-dep", "最近的部署紀錄顯示一切正常", 0.8, timestamp);
+			insertWorking(beam, "wm-cjk-dep-trad", "上週的部署紀錄顯示一切正常", 0.8, timestamp);
+			insertWorking(beam, "wm-cjk-dep-simp", "上周的部署紀錄顯示一切正常", 0.8, timestamp);
+			insertWorking(beam, "wm-cjk-progress", "这个月的进度如期推进", 0.8, timestamp);
 
-			const temporalHits = engine.temporalVoice("最近的部署紀錄");
-			expect(temporalHits.map(hit => hit.memoryId)).toContain("wm-cjk-dep");
+			const tradHits = engine.temporalVoice("上週的部署");
+			expect(tradHits.map(hit => hit.memoryId)).toContain("wm-cjk-dep-trad");
+
+			const simpHits = engine.temporalVoice("上周的部署");
+			expect(simpHits.map(hit => hit.memoryId)).toContain("wm-cjk-dep-simp");
+
+			const monthHits = engine.temporalVoice("这个月的进度");
+			expect(monthHits.map(hit => hit.memoryId)).toContain("wm-cjk-progress");
+		} finally {
+			closeQuietly(beam.db);
+		}
+	});
+
+	it("deduplicates near-identical CJK memories while keeping distinct mixed-script and prolonged-sound Japanese memories in diversityRerank", () => {
+		const beam = makeBeam();
+		try {
+			const engine = new PolyphonicRecallEngine({
+				db: beam.db,
+				sessionId: beam.sessionId,
+				channelId: beam.channelId,
+			});
+			const timestamp = new Date().toISOString();
 
 			insertWorking(beam, "wm-cjk-rep1", "台積電法說會公布最新季度合併營收財報與全年資本支出規劃", 0.9, timestamp);
 			insertWorking(beam, "wm-cjk-rep2", "台積電法說會公布最新季度合併營收財報與全年資本支出目標", 0.85, timestamp);
 			insertWorking(beam, "wm-mixed-ts", "TypeScript支援CJK分詞", 0.8, timestamp);
 			insertWorking(beam, "wm-mixed-rs", "Rust支援WASM編譯", 0.75, timestamp);
+			insertWorking(beam, "wm-mixed-hanoi", "HàNội支援CJK分詞", 0.7, timestamp);
+			insertWorking(beam, "wm-mixed-moscow", "Москва支援CJK分詞", 0.65, timestamp);
+			insertWorking(beam, "wm-katakana-server", "サーバー設定の確認", 0.6, timestamp);
+			insertWorking(beam, "wm-katakana-router", "ルーター設定の確認", 0.55, timestamp);
 
 			const candidates = new Map([
 				[
 					"wm-cjk-rep1",
 					{
 						memoryId: "wm-cjk-rep1",
-						combinedScore: 0.05,
-						voiceScores: { hybrid: 0.05 },
+						combinedScore: 0.08,
+						voiceScores: { hybrid: 0.08 },
 						metadata: {},
 					},
 				],
@@ -354,8 +404,8 @@ describe("PolyphonicRecallEngine", () => {
 					"wm-cjk-rep2",
 					{
 						memoryId: "wm-cjk-rep2",
-						combinedScore: 0.04,
-						voiceScores: { hybrid: 0.04 },
+						combinedScore: 0.07,
+						voiceScores: { hybrid: 0.07 },
 						metadata: {},
 					},
 				],
@@ -363,8 +413,8 @@ describe("PolyphonicRecallEngine", () => {
 					"wm-mixed-ts",
 					{
 						memoryId: "wm-mixed-ts",
-						combinedScore: 0.03,
-						voiceScores: { hybrid: 0.03 },
+						combinedScore: 0.06,
+						voiceScores: { hybrid: 0.06 },
 						metadata: {},
 					},
 				],
@@ -372,8 +422,44 @@ describe("PolyphonicRecallEngine", () => {
 					"wm-mixed-rs",
 					{
 						memoryId: "wm-mixed-rs",
+						combinedScore: 0.05,
+						voiceScores: { hybrid: 0.05 },
+						metadata: {},
+					},
+				],
+				[
+					"wm-mixed-hanoi",
+					{
+						memoryId: "wm-mixed-hanoi",
+						combinedScore: 0.04,
+						voiceScores: { hybrid: 0.04 },
+						metadata: {},
+					},
+				],
+				[
+					"wm-mixed-moscow",
+					{
+						memoryId: "wm-mixed-moscow",
+						combinedScore: 0.03,
+						voiceScores: { hybrid: 0.03 },
+						metadata: {},
+					},
+				],
+				[
+					"wm-katakana-server",
+					{
+						memoryId: "wm-katakana-server",
 						combinedScore: 0.02,
 						voiceScores: { hybrid: 0.02 },
+						metadata: {},
+					},
+				],
+				[
+					"wm-katakana-router",
+					{
+						memoryId: "wm-katakana-router",
+						combinedScore: 0.01,
+						voiceScores: { hybrid: 0.01 },
 						metadata: {},
 					},
 				],
@@ -396,7 +482,15 @@ describe("PolyphonicRecallEngine", () => {
 				};
 			});
 
-			expect(reranked.map(r => r.id)).toEqual(["wm-cjk-rep1", "wm-mixed-ts", "wm-mixed-rs"]);
+			expect(reranked.map(r => r.id)).toEqual([
+				"wm-cjk-rep1",
+				"wm-mixed-ts",
+				"wm-mixed-rs",
+				"wm-mixed-hanoi",
+				"wm-mixed-moscow",
+				"wm-katakana-server",
+				"wm-katakana-router",
+			]);
 		} finally {
 			closeQuietly(beam.db);
 		}
