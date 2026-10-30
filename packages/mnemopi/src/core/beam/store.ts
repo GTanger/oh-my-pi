@@ -3,7 +3,7 @@ import { logger, withLoopPhase } from "@oh-my-pi/pi-utils";
 import { transaction } from "../../db";
 import { toUtcIso } from "../../util/datetime";
 import { generateId } from "../../util/ids";
-import { redactMemoryTextFields, sanitizeContent } from "../content-sanitizer";
+import { redactMemorySecrets, redactMemoryTextFields, sanitizeContent } from "../content-sanitizer";
 import { currentEmbeddingModel, embeddingsDisabled } from "../embeddings";
 import { EpisodicGraph } from "../episodic-graph";
 import { countExtractedFactCategories, extractFactCategoriesSafe } from "../extraction";
@@ -724,6 +724,9 @@ export function updateWorking(
 	rawContent: string | null = null,
 	importance: number | null = null,
 ): boolean {
+	const existing = beam.db.prepare("SELECT 1 FROM working_memory WHERE id = ?").get(memoryId);
+	if (!existing) return false;
+
 	const content = rawContent === null ? null : sanitizeContent(rawContent)[0];
 	const assignments: string[] = [];
 	const params: SQLQueryBindings[] = [];
@@ -941,6 +944,24 @@ export function importFromDict(beam: BeamMemoryState, data: Record<string, unkno
 			} else {
 				stats.working_memory.inserted++;
 			}
+			const cleanSource = item.source != null ? sanitizeContent(redactMemorySecrets(String(item.source)))[0] : null;
+			let cleanMetaJson = "{}";
+			if (item.metadata_json != null || item.metadata != null) {
+				const rawMeta =
+					typeof item.metadata_json === "string"
+						? (() => {
+								try {
+									return JSON.parse(item.metadata_json) as object;
+								} catch {
+									return {};
+								}
+							})()
+						: typeof item.metadata === "object" && item.metadata !== null
+							? (item.metadata as object)
+							: {};
+				cleanMetaJson = JSON.stringify(redactMemoryTextFields(rawMeta, true));
+			}
+
 			db.run(
 				`
 				INSERT INTO working_memory
@@ -953,11 +974,11 @@ export function importFromDict(beam: BeamMemoryState, data: Record<string, unkno
 				[
 					id,
 					sanitizeContent(String(sqlBinding(item.content, "") ?? ""))[0],
-					sqlBinding(item.source, null),
+					cleanSource,
 					sqlBinding(item.timestamp, null),
 					sqlBinding(item.session_id, "default"),
 					sqlBinding(item.importance, 0.5),
-					sqlBinding(item.metadata_json, "{}"),
+					cleanMetaJson,
 					sqlBinding(item.valid_until, null),
 					sqlBinding(item.superseded_by, null),
 					sqlBinding(item.scope, "session"),
@@ -1006,6 +1027,24 @@ export function importFromDict(beam: BeamMemoryState, data: Record<string, unkno
 			} else {
 				stats.episodic_memory.inserted++;
 			}
+			const cleanSource = item.source != null ? sanitizeContent(redactMemorySecrets(String(item.source)))[0] : null;
+			let cleanMetaJson = "{}";
+			if (item.metadata_json != null || item.metadata != null) {
+				const rawMeta =
+					typeof item.metadata_json === "string"
+						? (() => {
+								try {
+									return JSON.parse(item.metadata_json) as object;
+								} catch {
+									return {};
+								}
+							})()
+						: typeof item.metadata === "object" && item.metadata !== null
+							? (item.metadata as object)
+							: {};
+				cleanMetaJson = JSON.stringify(redactMemoryTextFields(rawMeta, true));
+			}
+
 			db.run(
 				`
 				INSERT INTO episodic_memory
@@ -1018,11 +1057,11 @@ export function importFromDict(beam: BeamMemoryState, data: Record<string, unkno
 				[
 					id,
 					sanitizeContent(String(sqlBinding(item.content, "") ?? ""))[0],
-					sqlBinding(item.source, null),
+					cleanSource,
 					sqlBinding(item.timestamp, null),
 					sqlBinding(item.session_id, "default"),
 					sqlBinding(item.importance, 0.5),
-					sqlBinding(item.metadata_json, "{}"),
+					cleanMetaJson,
 					sqlBinding(item.summary_of, ""),
 					sqlBinding(item.valid_until, null),
 					sqlBinding(item.superseded_by, null),

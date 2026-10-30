@@ -95,8 +95,6 @@ const INJECTED_MEMORY_TAG_SET: ReadonlySet<string> = new Set([
 	"private",
 ]);
 
-const TAG_TOKEN_RE = /<(\/?)\s*([a-zA-Z][a-zA-Z0-9_-]*)\b[^>]*>/g;
-
 /**
  * Return `true` when `tagName` is a canonical harness-authored XML tag (`irc` or `system-*`
  * such as `system-reminder`, `system-notice`, `system-injection`, `system-interrupt`).
@@ -126,7 +124,7 @@ export function isInjectedMemoryTagName(tagName: string): boolean {
 /**
  * Strip injected prompt/harness/memory wrapper blocks (`<system-*>`, `<irc>`, `<memories>`,
  * `<mental_models>`, `<hindsight_memories>`, `<relevant_memories>`, `<private>`) in a single
- * linear $O(n)$ pass.
+ * linear $O(n)$ non-backtracking character scan without regex suffix rescanning.
  *
  * Semantics:
  * - Matched opening and closing tag pairs (including arbitrarily deep same-name or cross-tag
@@ -135,43 +133,107 @@ export function isInjectedMemoryTagName(tagName: string): boolean {
  * - An orphan closing injected tag is removed in place.
  */
 export function stripInjectedMemoryTags(content: string): { content: string; stripped: boolean } {
-	if (!content.includes("<")) {
+	let ltIdx = content.indexOf("<");
+	if (ltIdx === -1) {
 		return { content, stripped: false };
 	}
 
-	TAG_TOKEN_RE.lastIndex = 0;
 	const stack: string[] = [];
 	const chunks: string[] = [];
 	let lastIndex = 0;
 	let stripped = false;
+	let cachedGtIdx = -1;
 
-	let match = TAG_TOKEN_RE.exec(content);
-	while (match !== null) {
-		const isClosing = match[1] === "/";
-		const rawName = match[2] ?? "";
-		const lowerName = rawName.toLowerCase();
-		if (isInjectedMemoryTagName(lowerName)) {
+	while (ltIdx !== -1) {
+		let ptr = ltIdx + 1;
+		while (ptr < content.length && (content.charCodeAt(ptr) === 32 || content.charCodeAt(ptr) === 9)) {
+			ptr++;
+		}
+
+		let isClosing = false;
+		if (ptr < content.length && content.charCodeAt(ptr) === 47 /* '/' */) {
+			isClosing = true;
+			ptr++;
+			while (ptr < content.length && (content.charCodeAt(ptr) === 32 || content.charCodeAt(ptr) === 9)) {
+				ptr++;
+			}
+		}
+
+		const nameStart = ptr;
+		while (ptr < content.length) {
+			const code = content.charCodeAt(ptr);
+			const isAlpha = (code >= 65 && code <= 90) || (code >= 97 && code <= 122);
+			const isDigit = code >= 48 && code <= 57;
+			const isExtra = code === 45 /* '-' */ || code === 95; /* '_' */
+			if (ptr === nameStart) {
+				if (!isAlpha) break;
+			} else if (!isAlpha && !isDigit && !isExtra) {
+				break;
+			}
+			ptr++;
+		}
+		const nameEnd = ptr;
+
+		if (nameEnd === nameStart) {
+			ltIdx = content.indexOf("<", ltIdx + 1);
+			continue;
+		}
+
+		const tagName = content.slice(nameStart, nameEnd);
+		if (!isInjectedMemoryTagName(tagName)) {
+			ltIdx = content.indexOf("<", ltIdx + 1);
+			continue;
+		}
+
+		// Next char after tagName must be EOF, '>', '/', or ASCII whitespace
+		if (nameEnd < content.length) {
+			const afterCode = content.charCodeAt(nameEnd);
+			const isWhitespace =
+				afterCode === 32 || afterCode === 9 || afterCode === 10 || afterCode === 13 || afterCode === 12;
+			if (afterCode !== 62 /* '>' */ && afterCode !== 47 /* '/' */ && !isWhitespace) {
+				ltIdx = content.indexOf("<", ltIdx + 1);
+				continue;
+			}
+		}
+
+		// Look for closing '>' monotonically: cachedGtIdx is only searched forward
+		if (cachedGtIdx < nameEnd) {
+			cachedGtIdx = content.indexOf(">", nameEnd);
+		}
+		const gtIdx = cachedGtIdx;
+
+		if (gtIdx === -1) {
+			// No '>' in remainder of content: tag is unclosed/truncated to EOF.
 			stripped = true;
-			if (!isClosing) {
+			if (!isClosing && stack.length === 0) {
+				chunks.push(content.slice(lastIndex, ltIdx));
+			}
+			lastIndex = content.length;
+			break;
+		}
+
+		stripped = true;
+		const lowerName = tagName.toLowerCase();
+		if (!isClosing) {
+			if (stack.length === 0) {
+				chunks.push(content.slice(lastIndex, ltIdx));
+			}
+			stack.push(lowerName);
+			lastIndex = gtIdx + 1;
+		} else if (stack.length === 0) {
+			chunks.push(content.slice(lastIndex, ltIdx));
+			lastIndex = gtIdx + 1;
+		} else {
+			const matchIdx = stack.lastIndexOf(lowerName);
+			if (matchIdx !== -1) {
+				stack.length = matchIdx;
 				if (stack.length === 0) {
-					chunks.push(content.slice(lastIndex, match.index));
-				}
-				stack.push(lowerName);
-				lastIndex = match.index + match[0].length;
-			} else if (stack.length === 0) {
-				chunks.push(content.slice(lastIndex, match.index));
-				lastIndex = match.index + match[0].length;
-			} else {
-				const matchIdx = stack.lastIndexOf(lowerName);
-				if (matchIdx !== -1) {
-					stack.length = matchIdx;
-					if (stack.length === 0) {
-						lastIndex = match.index + match[0].length;
-					}
+					lastIndex = gtIdx + 1;
 				}
 			}
 		}
-		match = TAG_TOKEN_RE.exec(content);
+
+		ltIdx = content.indexOf("<", gtIdx + 1);
 	}
 
 	if (!stripped) {
@@ -289,6 +351,82 @@ function redactJwtsWithFlag(input: string): { content: string; matched: boolean 
 	}
 	return copied === 0 ? { content: input, matched: false } : { content: out + input.slice(copied), matched: true };
 }
+const PEM_BEGIN_RE = /-----BEGIN (?:[A-Z0-9]+ )*PRIVATE KEY-----/g;
+const PEM_END_RE = /-----END (?:[A-Z0-9]+ )*PRIVATE KEY-----/g;
+
+/**
+ * Redact PEM private key blocks in strictly linear time.
+ * If no matching END marker remains in the suffix, subsequent unclosed BEGIN markers
+ * redact only to the end of their current line without rescanning to EOF.
+ */
+export function redactPemPrivateKeys(text: string): { content: string; matched: boolean } {
+	PEM_BEGIN_RE.lastIndex = 0;
+	let match = PEM_BEGIN_RE.exec(text);
+	if (match === null) {
+		return { content: text, matched: false };
+	}
+
+	PEM_END_RE.lastIndex = 0;
+	let noMoreEndMarkers = false;
+	const chunks: string[] = [];
+	let lastIndex = 0;
+
+	while (match !== null) {
+		const beginStart = match.index;
+		const beginEnd = beginStart + match[0].length;
+		chunks.push(text.slice(lastIndex, beginStart));
+
+		if (!noMoreEndMarkers) {
+			if (PEM_END_RE.lastIndex < beginEnd) {
+				PEM_END_RE.lastIndex = beginEnd;
+			}
+			const endMatch = PEM_END_RE.exec(text);
+			if (endMatch !== null) {
+				chunks.push("[REDACTED]");
+				lastIndex = endMatch.index + endMatch[0].length;
+				PEM_BEGIN_RE.lastIndex = lastIndex;
+				match = PEM_BEGIN_RE.exec(text);
+				continue;
+			}
+			noMoreEndMarkers = true;
+		}
+
+		// No more END markers anywhere in the remaining text.
+		// Consume the BEGIN header and any trailing PEM base64/whitespace characters, matching
+		// the original pattern: -----BEGIN ... PRIVATE KEY-----[A-Za-z0-9+/=\r\n\t -]*
+		let payloadEnd = beginEnd;
+		while (payloadEnd < text.length) {
+			const code = text.charCodeAt(payloadEnd);
+			if (
+				(code >= 65 && code <= 90) ||
+				(code >= 97 && code <= 122) ||
+				(code >= 48 && code <= 57) ||
+				code === 43 /* '+' */ ||
+				code === 47 /* '/' */ ||
+				code === 61 /* '=' */ ||
+				code === 32 /* ' ' */ ||
+				code === 9 /* '\t' */ ||
+				code === 13 /* '\r' */ ||
+				code === 10 /* '\n' */ ||
+				code === 45 /* '-' */
+			) {
+				payloadEnd++;
+			} else {
+				break;
+			}
+		}
+		chunks.push("[REDACTED]");
+		lastIndex = payloadEnd;
+		PEM_BEGIN_RE.lastIndex = lastIndex;
+		match = PEM_BEGIN_RE.exec(text);
+	}
+
+	if (lastIndex < text.length) {
+		chunks.push(text.slice(lastIndex));
+	}
+
+	return { content: chunks.join(""), matched: true };
+}
 
 const CREDENTIAL_RULES: ReadonlyArray<{
 	type: string;
@@ -298,9 +436,7 @@ const CREDENTIAL_RULES: ReadonlyArray<{
 }> = [
 	{
 		type: "pem_private_key",
-		pattern:
-			/-----BEGIN (?:RSA |OPENSSH |EC |DSA |ENCRYPTED )?PRIVATE KEY-----[\s\S]*?-----END (?:RSA |OPENSSH |EC |DSA |ENCRYPTED )?PRIVATE KEY-----|-----BEGIN (?:RSA |OPENSSH |EC |DSA |ENCRYPTED )?PRIVATE KEY-----[A-Za-z0-9+/=\r\n\t -]*/g,
-		replacement: "[REDACTED]",
+		custom: redactPemPrivateKeys,
 	},
 	{
 		type: "openai_anthropic_key",
@@ -448,6 +584,13 @@ export function redactMemoryTextFields<T extends object>(value: T, stripTags = f
 			out ??= { ...source };
 			out.metadata = metadata;
 		}
+	} else {
+		// If this is a standalone metadata dictionary without a nested "metadata" key,
+		// redact all nested values directly.
+		const redacted = redactNested(source, stripTags) as Record<string, unknown>;
+		if (redacted !== source) {
+			out = out ? (redactNested(out, stripTags) as Record<string, unknown>) : redacted;
+		}
 	}
 	return (out ?? value) as T;
 }
@@ -470,6 +613,18 @@ function isBinaryMediaMime(mimeType: string): boolean {
 	return /^(?:image|audio|video|font)\//i.test(mimeType);
 }
 
+function isTextualMime(mimeType: string): boolean {
+	const lower = mimeType.toLowerCase();
+	return (
+		lower.startsWith("text/") ||
+		lower === "application/json" ||
+		lower === "application/xml" ||
+		lower === "application/javascript" ||
+		lower.endsWith("+json") ||
+		lower.endsWith("+xml")
+	);
+}
+
 /**
  * Sanitize memory content prior to SQLite or blob-store persistence:
  * 1. Strips injected harness/memory wrapper tags (`<system-*>`, `<irc>`, `<memories>`, `<private>`, etc.).
@@ -488,8 +643,12 @@ export function sanitizeContent(content: string): [sanitizedContent: string, met
 				mime: mimeType,
 				extraction_reason: "data_uri",
 			};
-			if (!isBinaryMediaMime(mimeType) && !rawBytes.includes(0)) {
-				let decoded = rawBytes.toString("utf8");
+			const textualMime = isTextualMime(mimeType);
+			const canDecodeText = textualMime || (!isBinaryMediaMime(mimeType) && !rawBytes.includes(0));
+			if (canDecodeText) {
+				let decoded = textualMime
+					? new TextDecoder("utf-8", { fatal: false }).decode(rawBytes)
+					: rawBytes.toString("utf8");
 				const tagRes = stripInjectedMemoryTags(decoded);
 				if (tagRes.stripped) {
 					decoded = tagRes.content;
