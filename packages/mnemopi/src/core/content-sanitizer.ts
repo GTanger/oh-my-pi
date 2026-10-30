@@ -139,6 +139,7 @@ export function stripInjectedMemoryTags(content: string): { content: string; str
 	}
 
 	const stack: string[] = [];
+	const openCounts = new Map<string, number>();
 	const chunks: string[] = [];
 	let lastIndex = 0;
 	let stripped = false;
@@ -205,7 +206,7 @@ export function stripInjectedMemoryTags(content: string): { content: string; str
 		if (gtIdx === -1) {
 			// No '>' in remainder of content: tag is unclosed/truncated to EOF.
 			stripped = true;
-			if (!isClosing && stack.length === 0) {
+			if (stack.length === 0) {
 				chunks.push(content.slice(lastIndex, ltIdx));
 			}
 			lastIndex = content.length;
@@ -219,20 +220,28 @@ export function stripInjectedMemoryTags(content: string): { content: string; str
 				chunks.push(content.slice(lastIndex, ltIdx));
 			}
 			stack.push(lowerName);
+			openCounts.set(lowerName, (openCounts.get(lowerName) ?? 0) + 1);
 			lastIndex = gtIdx + 1;
 		} else if (stack.length === 0) {
 			chunks.push(content.slice(lastIndex, ltIdx));
 			lastIndex = gtIdx + 1;
-		} else {
-			const matchIdx = stack.lastIndexOf(lowerName);
-			if (matchIdx !== -1) {
-				stack.length = matchIdx;
-				if (stack.length === 0) {
-					lastIndex = gtIdx + 1;
+		} else if ((openCounts.get(lowerName) ?? 0) > 0) {
+			while (stack.length > 0) {
+				const popped = stack.pop()!;
+				const count = (openCounts.get(popped) ?? 1) - 1;
+				if (count > 0) {
+					openCounts.set(popped, count);
+				} else {
+					openCounts.delete(popped);
+				}
+				if (popped === lowerName) {
+					break;
 				}
 			}
+			if (stack.length === 0) {
+				lastIndex = gtIdx + 1;
+			}
 		}
-
 		ltIdx = content.indexOf("<", gtIdx + 1);
 	}
 
@@ -564,6 +573,13 @@ function redactNested(value: unknown, stripTags = false): unknown {
 }
 
 /**
+ * Recursively sanitize all string values in a standalone metadata dictionary or nested object,
+ * stripping injected prompt tags and redacting credential secrets.
+ */
+export function sanitizeMetadataRecord<T>(metadata: T, stripTags = true): T {
+	return redactNested(metadata, stripTags) as T;
+}
+/**
  * Copy `value` with every text-bearing field and all nested metadata strings redacted.
  * Returns `value` itself when nothing changed, so a clean write allocates nothing.
  */
@@ -583,13 +599,6 @@ export function redactMemoryTextFields<T extends object>(value: T, stripTags = f
 		if (metadata !== source.metadata) {
 			out ??= { ...source };
 			out.metadata = metadata;
-		}
-	} else {
-		// If this is a standalone metadata dictionary without a nested "metadata" key,
-		// redact all nested values directly.
-		const redacted = redactNested(source, stripTags) as Record<string, unknown>;
-		if (redacted !== source) {
-			out = out ? (redactNested(out, stripTags) as Record<string, unknown>) : redacted;
 		}
 	}
 	return (out ?? value) as T;

@@ -3,7 +3,12 @@ import { logger, withLoopPhase } from "@oh-my-pi/pi-utils";
 import { transaction } from "../../db";
 import { toUtcIso } from "../../util/datetime";
 import { generateId } from "../../util/ids";
-import { redactMemorySecrets, redactMemoryTextFields, sanitizeContent } from "../content-sanitizer";
+import {
+	redactMemorySecrets,
+	redactMemoryTextFields,
+	sanitizeContent,
+	sanitizeMetadataRecord,
+} from "../content-sanitizer";
 import { currentEmbeddingModel, embeddingsDisabled } from "../embeddings";
 import { EpisodicGraph } from "../episodic-graph";
 import { countExtractedFactCategories, extractFactCategoriesSafe } from "../extraction";
@@ -724,7 +729,9 @@ export function updateWorking(
 	rawContent: string | null = null,
 	importance: number | null = null,
 ): boolean {
-	const existing = beam.db.prepare("SELECT 1 FROM working_memory WHERE id = ?").get(memoryId);
+	const existing = beam.db
+		.prepare("SELECT 1 FROM working_memory WHERE id = ? AND session_id = ?")
+		.get(memoryId, beam.sessionId);
 	if (!existing) return false;
 
 	const content = rawContent === null ? null : sanitizeContent(rawContent)[0];
@@ -959,7 +966,7 @@ export function importFromDict(beam: BeamMemoryState, data: Record<string, unkno
 						: typeof item.metadata === "object" && item.metadata !== null
 							? (item.metadata as object)
 							: {};
-				cleanMetaJson = JSON.stringify(redactMemoryTextFields(rawMeta, true));
+				cleanMetaJson = JSON.stringify(sanitizeMetadataRecord(rawMeta, true));
 			}
 
 			db.run(
@@ -1042,7 +1049,7 @@ export function importFromDict(beam: BeamMemoryState, data: Record<string, unkno
 						: typeof item.metadata === "object" && item.metadata !== null
 							? (item.metadata as object)
 							: {};
-				cleanMetaJson = JSON.stringify(redactMemoryTextFields(rawMeta, true));
+				cleanMetaJson = JSON.stringify(sanitizeMetadataRecord(rawMeta, true));
 			}
 
 			db.run(

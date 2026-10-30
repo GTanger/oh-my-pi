@@ -247,8 +247,7 @@ Tail content
 		expect(meta).toEqual({});
 	});
 
-	it("parses deeply nested injected tags in one linear pass and scrubs text data URIs and oversized blobs before disk storage", () => {
-		const blobRoot = useTempBlobDir();
+	it("strips deeply nested injected memory tags in linear time", () => {
 		const depth = 4000;
 		const deeplyNested = `${"Before "}${"<private>".repeat(depth)}secret${"</private>".repeat(depth)}${" After"}`;
 		const startMs = performance.now();
@@ -257,20 +256,26 @@ Tail content
 		expect(deepRes.stripped).toBe(true);
 		expect(deepRes.content).toBe("Before  After");
 		expect(elapsedMs).toBeLessThan(250);
+	});
 
+	it("strips interleaved and nested tags with truncated tails", () => {
 		const nested =
 			"Before\n<private>outer <private>inner</private> leaked</private>\n<system-reminder>truncated tail";
 		const strippedRes = stripInjectedMemoryTags(nested);
 		expect(strippedRes.stripped).toBe(true);
 		expect(strippedRes.content).toBe("Before");
+	});
 
+	it("redacts unclosed PEM private key blocks to [REDACTED]", () => {
 		const unclosedPem = `Key:\n-----BEGIN ${"ENCRYPTED PRIVATE"} KEY-----\nMIIFDjBABgkqhkiG9w0BBQ0wMzAbBgkqhkiG9w0BBQwwDgQISecretMaterial`;
 		const scrubbedPem = scrubLiveCredentials(unclosedPem);
 		expect(scrubbedPem.matchedTypes).toEqual(["pem_private_key"]);
 		expect(scrubbedPem.content).toBe("Key:\n[REDACTED]");
 		expect(scrubbedPem.content).not.toContain("MIIFDj");
+	});
 
-		// 1. Text data URI must have tags and credentials scrubbed BEFORE writing blob bytes to disk
+	it("scrubs text data URIs before writing blob bytes to disk", () => {
+		const blobRoot = useTempBlobDir();
 		const textDataPayload =
 			"Header\n<private>hidden note</private>\nAuthorization: Bearer sampleLongCredential123456789";
 		const textDataUri = `data:text/plain;base64,${Buffer.from(textDataPayload, "utf8").toString("base64")}`;
@@ -286,8 +291,10 @@ Tail content
 		expect(dataUriBlobBytes).not.toContain("hidden note");
 		expect(dataUriBlobBytes).not.toContain("sampleLongCredential123456789");
 		expect(dataUriBlobBytes).toContain("Authorization: Bearer [REDACTED]");
+	});
 
-		// 2. Oversized payload (> SIZE_HARD_CAP) must have tags and credentials scrubbed BEFORE writing blob bytes
+	it("scrubs oversized payloads before writing blob bytes to disk", () => {
+		const blobRoot = useTempBlobDir();
 		const oversizedPayload = `<system-notice>internal</system-notice>\nAuthorization: Bearer sampleLongCredential123456789\n${"x".repeat(1_000_010)}`;
 		const [, capMeta] = sanitizeContent(oversizedPayload);
 		expect(capMeta.extraction_reason).toBe("size_cap");
@@ -300,8 +307,25 @@ Tail content
 		expect(capBlobBytes).toContain("Authorization: Bearer [REDACTED]");
 	});
 
-	it("sanitizes memory writes across BeamMemory.remember, rememberBatch, and updateWorking", () => {
-		const beam = new BeamMemory({ dbPath: ":memory:", sessionId: "sanitize-write-test" });
+	it("completes 16,000 open tags followed by 16,000 unmatched closers in under 50ms", () => {
+		const count = 16000;
+		const payload = "<private>".repeat(count) + "</system-notice>".repeat(count);
+		const start = performance.now();
+		const res = stripInjectedMemoryTags(payload);
+		const elapsed = performance.now() - start;
+		expect(res.stripped).toBe(true);
+		expect(res.content).toBe("");
+		expect(elapsed).toBeLessThan(50);
+	});
+
+	it("preserves prefix text before a truncated closing tag", () => {
+		const res = stripInjectedMemoryTags("keep this </private");
+		expect(res.stripped).toBe(true);
+		expect(res.content).toBe("keep this");
+	});
+
+	it("sanitizes memory writes via BeamMemory.remember", () => {
+		const beam = new BeamMemory({ dbPath: ":memory:", sessionId: "sanitize-remember-test" });
 		try {
 			const id = beam.remember(
 				"Keep this\n<private>injected note</private>\nAuthorization: Bearer sampleLongCredential123456789",
@@ -310,7 +334,14 @@ Tail content
 			expect(stored?.content).toBe("Keep this\n\nAuthorization: Bearer [REDACTED]");
 			expect(stored?.content).not.toContain("injected note");
 			expect(stored?.content).not.toContain("sampleLongCredential123456789");
+		} finally {
+			beam.close();
+		}
+	});
 
+	it("sanitizes memory writes via BeamMemory.rememberBatch", () => {
+		const beam = new BeamMemory({ dbPath: ":memory:", sessionId: "sanitize-batch-test" });
+		try {
 			const [batchId] = beam.rememberBatch([
 				{
 					content: "Batch item\n<system-notice>harness block</system-notice>\nsecret_aB3dEfGh1JkLmN0pQ",
@@ -318,7 +349,15 @@ Tail content
 			]);
 			const batchStored = beam.get(batchId!) as { content: string } | null;
 			expect(batchStored?.content).toBe("Batch item\n\n[REDACTED]");
+		} finally {
+			beam.close();
+		}
+	});
 
+	it("sanitizes memory writes via BeamMemory.updateWorking", () => {
+		const beam = new BeamMemory({ dbPath: ":memory:", sessionId: "sanitize-update-test" });
+		try {
+			const id = beam.remember("Initial safe content");
 			beam.updateWorking(
 				id,
 				"Updated\n<memories>recalled</memories>\nAuthorization: Bearer anotherLongSecretToken987654",
@@ -422,6 +461,69 @@ Tail content
 			expect(existsSync(blobRoot)).toBe(false);
 		} finally {
 			beam.close();
+		}
+	});
+
+	it("sanitizes consolidation source containing prompt tags and credentials in consolidateToEpisodic", () => {
+		const beam = new BeamMemory({ dbPath: ":memory:", sessionId: "consolidate-source-test" });
+		try {
+			const wmId = beam.remember("Source working memory item");
+			const episodicId = beam.consolidateToEpisodic(
+				"Consolidated episodic summary",
+				[wmId],
+				"source-<memories>injected</memories>-Authorization: Bearer secretToken123456789",
+			);
+			const stored = beam.get(episodicId) as { source: string } | null;
+			expect(stored?.source).toBe("source--Authorization: Bearer [REDACTED]");
+			expect(stored?.source).not.toContain("injected");
+			expect(stored?.source).not.toContain("secretToken123456789");
+		} finally {
+			beam.close();
+		}
+	});
+
+	it("sanitizes standalone metadata dictionary containing both a metadata key and sibling secrets in importFromDict", () => {
+		const beam = new BeamMemory({ dbPath: ":memory:", sessionId: "import-meta-sibling-test" });
+		try {
+			beam.importFromDict({
+				working_memory: [
+					{
+						id: "wm-sibling-meta-1",
+						content: "Imported content",
+						metadata_json: JSON.stringify({
+							metadata: {
+								nestedTag: "<private>strip-this</private>nested value",
+							},
+							apiKey: "sk-live-123456789012345678901234",
+							clientSecret: "secret_12345678901234567890",
+						}),
+					},
+				],
+			});
+
+			const wm = beam.get("wm-sibling-meta-1") as { metadata: string } | null;
+			const parsed = JSON.parse(wm?.metadata ?? "{}");
+			expect(parsed.metadata.nestedTag).toBe("nested value");
+			expect(parsed.apiKey).toBe("[REDACTED]");
+			expect(parsed.clientSecret).toBe("[REDACTED]");
+		} finally {
+			beam.close();
+		}
+	});
+
+	it("does not write blob files when updateWorking targets a cross-session memory ID", () => {
+		const blobRoot = useTempBlobDir();
+		const beamSession1 = new BeamMemory({ dbPath: ":memory:", sessionId: "session-1" });
+		const beamSession2 = new BeamMemory({ dbPath: ":memory:", sessionId: "session-2" });
+		try {
+			const id = beamSession1.remember("Session 1 item");
+			const oversizedContent = "A".repeat(1_000_050);
+			const updated = beamSession2.updateWorking(id, oversizedContent);
+			expect(updated).toBe(false);
+			expect(existsSync(blobRoot)).toBe(false);
+		} finally {
+			beamSession1.close();
+			beamSession2.close();
 		}
 	});
 });
