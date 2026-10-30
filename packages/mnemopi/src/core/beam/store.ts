@@ -3,6 +3,7 @@ import { logger, withLoopPhase } from "@oh-my-pi/pi-utils";
 import { transaction } from "../../db";
 import { toUtcIso } from "../../util/datetime";
 import { generateId } from "../../util/ids";
+import { redactMemoryTextFields, sanitizeContent } from "../content-sanitizer";
 import { currentEmbeddingModel, embeddingsDisabled } from "../embeddings";
 import { EpisodicGraph } from "../episodic-graph";
 import { countExtractedFactCategories, extractFactCategoriesSafe } from "../extraction";
@@ -431,7 +432,9 @@ export function reconcileEmbeddingModel(beam: BeamMemoryState): void {
 	rebuild(missing);
 }
 
-export function remember(beam: BeamMemoryState, content: string, options: StoreRememberOptions = {}): string {
+export function remember(beam: BeamMemoryState, rawContent: string, rawOptions: StoreRememberOptions = {}): string {
+	const [content] = sanitizeContent(rawContent);
+	const options = redactMemoryTextFields(rawOptions, true);
 	const source = options.source ?? "conversation";
 	const importance = options.importance ?? 0.5;
 	const timestamp = options.timestamp ?? toUtcIso();
@@ -445,7 +448,6 @@ export function remember(beam: BeamMemoryState, content: string, options: StoreR
 	const channelId = options.channelId ?? options.channel_id ?? beam.channelId;
 	const metadata = options.metadata ?? null;
 	const embedText = embeddingText(content, options);
-
 	const existingId = findDuplicate(beam, content);
 	if (existingId !== null) {
 		beam.db.run(
@@ -548,9 +550,15 @@ export function remember(beam: BeamMemoryState, content: string, options: StoreR
 
 export function rememberBatch(
 	beam: BeamMemoryState,
-	items: readonly RememberBatchItem[],
-	options: StoreRememberBatchOptions = {},
+	rawItems: readonly RememberBatchItem[],
+	rawOptions: StoreRememberBatchOptions = {},
 ): string[] {
+	const options = redactMemoryTextFields(rawOptions, true);
+	const items = rawItems.map(rawItem => {
+		const scrubbed = redactMemoryTextFields(rawItem, true);
+		const [sanitizedContent] = sanitizeContent(scrubbed.content);
+		return sanitizedContent === scrubbed.content ? scrubbed : { ...scrubbed, content: sanitizedContent };
+	});
 	const timestamp = toUtcIso();
 	const ids: string[] = [];
 	const forceVeracity = options.forceVeracity ?? options.force_veracity ?? false;
@@ -713,9 +721,10 @@ export function getGlobalWorkingStats(beam: BeamMemoryState): BeamStats {
 export function updateWorking(
 	beam: BeamMemoryState,
 	memoryId: string,
-	content: string | null = null,
+	rawContent: string | null = null,
 	importance: number | null = null,
 ): boolean {
+	const content = rawContent === null ? null : sanitizeContent(rawContent)[0];
 	const assignments: string[] = [];
 	const params: SQLQueryBindings[] = [];
 	if (content !== null) {
@@ -815,7 +824,8 @@ export function forgetWorking(beam: BeamMemoryState, memoryId: string): boolean 
 	return deleted > 0;
 }
 
-export function scratchpadWrite(beam: BeamMemoryState, content: string): string {
+export function scratchpadWrite(beam: BeamMemoryState, rawContent: string): string {
+	const [content] = sanitizeContent(rawContent);
 	const padId = generateId(content);
 	const timestamp = toUtcIso();
 	beam.db.run(
@@ -942,7 +952,7 @@ export function importFromDict(beam: BeamMemoryState, data: Record<string, unkno
 			`,
 				[
 					id,
-					sqlBinding(item.content, ""),
+					sanitizeContent(String(sqlBinding(item.content, "") ?? ""))[0],
 					sqlBinding(item.source, null),
 					sqlBinding(item.timestamp, null),
 					sqlBinding(item.session_id, "default"),
@@ -957,7 +967,9 @@ export function importFromDict(beam: BeamMemoryState, data: Record<string, unkno
 					clampVeracity(item.veracity),
 					item.consolidated_at == null ? importedAt : sqlBinding(item.consolidated_at, importedAt),
 					sqlBinding(item.memory_type, "unknown"),
-					sqlBinding(item.embed_text, null),
+					typeof item.embed_text === "string"
+						? sanitizeContent(item.embed_text)[0]
+						: sqlBinding(item.embed_text, null),
 					sqlBinding(item.author_id, null),
 					sqlBinding(item.author_type, null),
 					sqlBinding(item.channel_id, null),
@@ -1005,7 +1017,7 @@ export function importFromDict(beam: BeamMemoryState, data: Record<string, unkno
 			`,
 				[
 					id,
-					sqlBinding(item.content, ""),
+					sanitizeContent(String(sqlBinding(item.content, "") ?? ""))[0],
 					sqlBinding(item.source, null),
 					sqlBinding(item.timestamp, null),
 					sqlBinding(item.session_id, "default"),
@@ -1060,7 +1072,7 @@ export function importFromDict(beam: BeamMemoryState, data: Record<string, unkno
 			const exists = scratchExists.get(id) !== null;
 			if (exists) {
 				db.run("UPDATE scratchpad SET content = ?, session_id = ?, created_at = ?, updated_at = ? WHERE id = ?", [
-					sqlBinding(item.content, ""),
+					sanitizeContent(String(sqlBinding(item.content, "") ?? ""))[0],
 					sqlBinding(item.session_id, "default"),
 					sqlBinding(item.created_at, null),
 					sqlBinding(item.updated_at, null),
@@ -1070,7 +1082,7 @@ export function importFromDict(beam: BeamMemoryState, data: Record<string, unkno
 			} else {
 				db.run("INSERT INTO scratchpad (id, content, session_id, created_at, updated_at) VALUES (?, ?, ?, ?, ?)", [
 					id,
-					sqlBinding(item.content, ""),
+					sanitizeContent(String(sqlBinding(item.content, "") ?? ""))[0],
 					sqlBinding(item.session_id, "default"),
 					sqlBinding(item.created_at, null),
 					sqlBinding(item.updated_at, null),

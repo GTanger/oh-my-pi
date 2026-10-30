@@ -3,6 +3,7 @@ import { logger } from "@oh-my-pi/pi-utils";
 import { polyphonicRecallEnabled } from "../../config";
 import { generateId, stableMemoryId } from "../../util/ids";
 import { aaakEncode } from "../aaak";
+import { sanitizeContent } from "../content-sanitizer";
 import { REGEX_EXTRACTION_MAX_INPUT_CHARS } from "../entities";
 import { EpisodicGraph } from "../episodic-graph";
 import { type ExtractedFactCategories, heuristicExtractFacts } from "../extraction";
@@ -486,12 +487,13 @@ function ingestIntoEpisodicGraph(beam: BeamMemoryState, memoryId: string, summar
 
 export function consolidateToEpisodic(
 	beam: BeamMemoryState,
-	summary: string,
+	rawSummary: string,
 	sourceWmIds: readonly string[],
 	source = "consolidation",
 	importance = 0.6,
 	options: ConsolidateOptions = {},
 ): string {
+	const [summary] = sanitizeContent(rawSummary);
 	const memoryId = generateId(summary);
 	const timestamp = isoNow();
 	const scope = options.scope ?? "session";
