@@ -1,5 +1,5 @@
 import { afterEach, describe, expect, it } from "bun:test";
-import { existsSync, mkdtempSync, readFileSync, statSync } from "node:fs";
+import { existsSync, mkdtempSync, readFileSync, rmSync, statSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
@@ -511,10 +511,33 @@ Tail content
 		}
 	});
 
-	it("does not write blob files when updateWorking targets a cross-session memory ID", () => {
+	it("preserves suffix text after self-closing injected wrapper tags", () => {
+		const [cleaned, meta] = sanitizeContent("keep <private/> tail and <system-reminder /> end");
+		expect(meta.stripped_tags).toBe(true);
+		expect(cleaned).toBe("keep  tail and  end");
+	});
+
+	it("preserves binary application/pdf data URI bytes without UTF-8 re-encoding", () => {
 		const blobRoot = useTempBlobDir();
-		const beamSession1 = new BeamMemory({ dbPath: ":memory:", sessionId: "session-1" });
-		const beamSession2 = new BeamMemory({ dbPath: ":memory:", sessionId: "session-2" });
+		const pdfBytes = Buffer.from(
+			"%PDF-1.7\n1 0 obj\n<< /Author (Authorization: Bearer sampleLongCredential123456789) >>\nendobj\n\x80\xff",
+			"latin1",
+		);
+		const uri = `data:application/pdf;base64,${pdfBytes.toString("base64")}`;
+		const [, meta] = sanitizeContent(uri);
+		expect(meta.extraction_reason).toBe("data_uri");
+		expect(meta.redacted_secrets).toBeUndefined();
+		const sha = (meta.blob_ref ?? "").replace("blob://sha256/", "");
+		const stored = readFileSync(join(blobRoot, sha.slice(0, 2), sha.slice(0, 4), sha));
+		expect(Buffer.compare(stored, pdfBytes)).toBe(0);
+	});
+
+	it("does not write blob files when updateWorking targets a cross-session memory ID in a shared database", () => {
+		const blobRoot = useTempBlobDir();
+		const dbDir = mkdtempSync(join(tmpdir(), "mnemopi-shared-db-"));
+		const sharedDbPath = join(dbDir, "shared.db");
+		const beamSession1 = new BeamMemory({ dbPath: sharedDbPath, sessionId: "session-1" });
+		const beamSession2 = new BeamMemory({ dbPath: sharedDbPath, sessionId: "session-2" });
 		try {
 			const id = beamSession1.remember("Session 1 item");
 			const oversizedContent = "A".repeat(1_000_050);
@@ -524,6 +547,7 @@ Tail content
 		} finally {
 			beamSession1.close();
 			beamSession2.close();
+			rmSync(dbDir, { recursive: true, force: true });
 		}
 	});
 });

@@ -219,8 +219,15 @@ export function stripInjectedMemoryTags(content: string): { content: string; str
 			if (stack.length === 0) {
 				chunks.push(content.slice(lastIndex, ltIdx));
 			}
-			stack.push(lowerName);
-			openCounts.set(lowerName, (openCounts.get(lowerName) ?? 0) + 1);
+			let slashScan = gtIdx - 1;
+			while (slashScan > nameEnd && (content.charCodeAt(slashScan) === 32 || content.charCodeAt(slashScan) === 9)) {
+				slashScan--;
+			}
+			const isSelfClosing = slashScan >= nameEnd && content.charCodeAt(slashScan) === 47; /* '/' */
+			if (!isSelfClosing) {
+				stack.push(lowerName);
+				openCounts.set(lowerName, (openCounts.get(lowerName) ?? 0) + 1);
+			}
 			lastIndex = gtIdx + 1;
 		} else if (stack.length === 0) {
 			chunks.push(content.slice(lastIndex, ltIdx));
@@ -618,17 +625,16 @@ export function redactRememberWrite<M extends string | object, O>(memory: M, opt
 	return [scrubbedMemory, scrubbedOptions];
 }
 
-function isBinaryMediaMime(mimeType: string): boolean {
-	return /^(?:image|audio|video|font)\//i.test(mimeType);
-}
-
 function isTextualMime(mimeType: string): boolean {
-	const lower = mimeType.toLowerCase();
+	const lower = mimeType.trim().toLowerCase();
 	return (
+		lower === "" ||
 		lower.startsWith("text/") ||
 		lower === "application/json" ||
 		lower === "application/xml" ||
 		lower === "application/javascript" ||
+		lower === "application/ecmascript" ||
+		lower === "application/x-www-form-urlencoded" ||
 		lower.endsWith("+json") ||
 		lower.endsWith("+xml")
 	);
@@ -652,12 +658,8 @@ export function sanitizeContent(content: string): [sanitizedContent: string, met
 				mime: mimeType,
 				extraction_reason: "data_uri",
 			};
-			const textualMime = isTextualMime(mimeType);
-			const canDecodeText = textualMime || (!isBinaryMediaMime(mimeType) && !rawBytes.includes(0));
-			if (canDecodeText) {
-				let decoded = textualMime
-					? new TextDecoder("utf-8", { fatal: false }).decode(rawBytes)
-					: rawBytes.toString("utf8");
+			if (isTextualMime(mimeType)) {
+				let decoded = new TextDecoder("utf-8", { fatal: false }).decode(rawBytes);
 				const tagRes = stripInjectedMemoryTags(decoded);
 				if (tagRes.stripped) {
 					decoded = tagRes.content;
