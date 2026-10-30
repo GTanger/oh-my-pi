@@ -1,5 +1,42 @@
 const RECALL_TOKEN_RE = /[a-z0-9][a-z0-9_.:/+-]*/g;
-const CJK_RE = /[\u3040-\u30ff\u4e00-\u9fff\uac00-\ud7af]/;
+const CJK_RE = /[\p{Script=Han}\p{Script=Hiragana}\p{Script=Katakana}\p{Script=Hangul}]/u;
+export const CJK_RUN_RE = /[\p{Script=Han}\p{Script=Hiragana}\p{Script=Katakana}\p{Script=Hangul}]{2,}/gu;
+const NON_CJK_TOKEN_RUN_RE = /[a-z0-9][a-z0-9_.-]*/gi;
+export const CJK_PARTICLE_SPLIT_RE = /[的了嗎呢吧啊呀嘛和與及或對將把被從向由給為於並而但卻又也還只就才已曾讓跟]/u;
+export const CJK_STOP_SEGMENTS: ReadonlySet<string> = new Set([
+	"什麼",
+	"什么",
+	"如何",
+	"怎麼",
+	"怎么",
+	"哪些",
+	"哪個",
+	"哪个",
+	"為什麼",
+	"为什么",
+	"是否",
+	"可以",
+	"一個",
+	"一个",
+	"這個",
+	"这个",
+	"那個",
+	"那个",
+	"我們",
+	"我们",
+	"你們",
+	"你们",
+	"他們",
+	"他们",
+	"檢查",
+	"检查",
+	"查看",
+	"查詢",
+	"查询",
+	"請問",
+	"请问",
+]);
+const CJK_QUESTION_PREFIXES = ["請問", "请问", "關於", "关于", "檢查", "检查", "查看", "查詢", "查询"] as const;
 
 export const FACT_MATCH_STOPWORDS = new Set([
 	"a",
@@ -68,9 +105,7 @@ export const RECALL_SYNONYMS: Readonly<Record<string, readonly string[]>> = {
 };
 
 export function isCjkChar(ch: string): boolean {
-	return (
-		(ch >= "\u4e00" && ch <= "\u9fff") || (ch >= "\u3040" && ch <= "\u30ff") || (ch >= "\uac00" && ch <= "\ud7af")
-	);
+	return CJK_RE.test(ch);
 }
 
 export function hasCjk(text: string): boolean {
@@ -145,8 +180,7 @@ export function minimumRecallRelevance(queryTokens: readonly string[]): number {
 
 export function cjkFtsTerms(text: string): string[] {
 	const chars: string[] = [];
-	for (let i = 0; i < text.length; i++) {
-		const ch = text.charAt(i);
+	for (const ch of text) {
 		if (isCjkChar(ch)) chars.push(ch);
 	}
 	if (chars.length === 0) return [];
@@ -184,4 +218,87 @@ function isAsciiDigits(value: string): boolean {
 		if (code < 48 || code > 57) return false;
 	}
 	return value.length > 0;
+}
+
+/** Count Unicode code points in `value` so supplementary-plane Han characters count as 1. */
+export function codePointLength(value: string): number {
+	let count = 0;
+	for (const _ of value) count++;
+	return count;
+}
+
+/** Strip leading CJK question/command prefixes when at least 2 code points remain. */
+export function stripCjkQuestionAffixes(segment: string): string {
+	for (const prefix of CJK_QUESTION_PREFIXES) {
+		if (segment.startsWith(prefix)) {
+			const rest = segment.slice(prefix.length);
+			if (codePointLength(rest) >= 2) return rest;
+		}
+	}
+	return segment;
+}
+
+/**
+ * Generate code-point-aligned character windows for `segment` across `sizes` (e.g. `[2, 3, 4]`),
+ * skipping stop segments and never splitting supplementary-plane surrogate pairs.
+ */
+export function cjkCodePointShingles(segment: string, sizes: readonly number[] = [2, 3, 4]): string[] {
+	const cps = Array.from(segment);
+	const out: string[] = [];
+	for (const size of sizes) {
+		if (size <= 0 || cps.length < size) continue;
+		for (let i = 0; i <= cps.length - size; i++) {
+			const shingle = cps.slice(i, i + size).join("");
+			if (!CJK_STOP_SEGMENTS.has(shingle)) out.push(shingle);
+		}
+	}
+	return out;
+}
+
+/**
+ * Split a mixed-script token (e.g. `PostgreSQL資料庫` or `TypeScript支援CJK`) into
+ * its contiguous non-CJK alphanumeric runs and contiguous CJK runs.
+ */
+export function splitMixedScriptToken(token: string): { nonCjk: string[]; cjkRuns: string[] } {
+	const nonCjk: string[] = [];
+	for (const match of token.matchAll(NON_CJK_TOKEN_RUN_RE)) {
+		const run = match[0]?.toLowerCase() ?? "";
+		if (run.length > 0) nonCjk.push(run);
+	}
+	const cjkRuns: string[] = [];
+	for (const match of token.matchAll(CJK_RUN_RE)) {
+		const run = match[0] ?? "";
+		if (run.length > 0) cjkRuns.push(run);
+	}
+	return { nonCjk, cjkRuns };
+}
+
+/**
+ * Expand a CJK-bearing token into candidate entity/subject segments and 2/3/4-code-point
+ * shingles, preserving both intact run shingles (for entities containing particle characters
+ * like `東京都`) and particle-split sub-clauses.
+ */
+export function expandCjkCandidateSegments(token: string, seen: Set<string>): void {
+	for (const match of token.matchAll(CJK_RUN_RE)) {
+		const run = match[0] ?? "";
+		const runLen = codePointLength(run);
+		if (runLen < 2) continue;
+		if (runLen <= 6 && !CJK_STOP_SEGMENTS.has(run)) seen.add(run);
+		const strippedRun = stripCjkQuestionAffixes(run);
+		if (strippedRun !== run && codePointLength(strippedRun) <= 6 && !CJK_STOP_SEGMENTS.has(strippedRun)) {
+			seen.add(strippedRun);
+		}
+		for (const shingle of cjkCodePointShingles(run, [2, 3, 4])) seen.add(shingle);
+
+		for (const rawSeg of run.split(CJK_PARTICLE_SPLIT_RE)) {
+			for (const seg of [rawSeg, stripCjkQuestionAffixes(rawSeg)]) {
+				const segLen = codePointLength(seg);
+				if (segLen < 2 || CJK_STOP_SEGMENTS.has(seg)) continue;
+				if (segLen <= 6) seen.add(seg);
+				if (segLen >= 3) {
+					for (const shingle of cjkCodePointShingles(seg, [2, 3, 4])) seen.add(shingle);
+				}
+			}
+		}
+	}
 }

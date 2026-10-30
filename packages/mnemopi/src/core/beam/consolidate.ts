@@ -2,6 +2,15 @@ import type { SQLQueryBindings } from "bun:sqlite";
 import { logger } from "@oh-my-pi/pi-utils";
 import { polyphonicRecallEnabled } from "../../config";
 import { generateId, stableMemoryId } from "../../util/ids";
+import {
+	CJK_PARTICLE_SPLIT_RE,
+	CJK_STOP_SEGMENTS,
+	cjkCodePointShingles,
+	codePointLength,
+	hasCjk,
+	splitMixedScriptToken,
+	stripCjkQuestionAffixes,
+} from "../../util/regex";
 import { aaakEncode } from "../aaak";
 import { REGEX_EXTRACTION_MAX_INPUT_CHARS } from "../entities";
 import { EpisodicGraph } from "../episodic-graph";
@@ -200,29 +209,6 @@ function asRows(value: unknown): Row[] {
 function escapeLike(value: string): string {
 	return value.replace(/[\\%_]/g, m => `\\${m}`);
 }
-const CJK_CHAR_RE = /[\p{Script=Han}\p{Script=Hiragana}\p{Script=Katakana}\p{Script=Hangul}]/u;
-const CJK_PARTICLE_SPLIT_RE =
-	/[的了在是和與及或對將把被從向由給為於並而但卻又也還都只就才已曾正要會能可讓使比跟同按依據關]/u;
-const CJK_STOP_SEGMENTS = new Set([
-	"什麼",
-	"如何",
-	"怎麼",
-	"哪些",
-	"哪個",
-	"為什麼",
-	"是否",
-	"可以",
-	"一個",
-	"這個",
-	"那個",
-	"我們",
-	"你們",
-	"他們",
-	"檢查",
-	"查看",
-	"查詢",
-]);
-
 function makeQuestionTokens(query: string): string[] {
 	const stop = new Set([
 		"a",
@@ -259,28 +245,44 @@ function makeQuestionTokens(query: string): string[] {
 	]);
 	const rawTokens = [...query.toLowerCase().matchAll(/[\p{L}\p{N}_.-]+/gu)]
 		.map(m => m[0] ?? "")
-		.filter(token => token.length > 1 && !stop.has(token) && !CJK_STOP_SEGMENTS.has(token));
+		.filter(token => codePointLength(token) > 1 && !stop.has(token) && !CJK_STOP_SEGMENTS.has(token));
 
 	const primary: string[] = [];
 	const shingles: string[] = [];
 	const seen = new Set<string>();
 
 	const pushUnique = (target: string[], token: string): void => {
-		if (!seen.has(token) && !CJK_STOP_SEGMENTS.has(token)) {
+		if (token.length > 0 && !seen.has(token) && !CJK_STOP_SEGMENTS.has(token)) {
 			seen.add(token);
 			target.push(token);
 		}
 	};
 
 	for (const token of rawTokens) {
-		if (CJK_CHAR_RE.test(token) && token.length > 2) {
-			const subsegs = token.split(CJK_PARTICLE_SPLIT_RE);
-			for (const seg of subsegs) {
-				if (seg.length < 2 || CJK_STOP_SEGMENTS.has(seg)) continue;
-				if (seg.length <= 4) pushUnique(primary, seg);
-				if (seg.length >= 3) {
-					for (let i = 0; i <= seg.length - 2; i++) pushUnique(shingles, seg.slice(i, i + 2));
-					for (let i = 0; i <= seg.length - 3; i++) pushUnique(shingles, seg.slice(i, i + 3));
+		if (hasCjk(token)) {
+			const { nonCjk, cjkRuns } = splitMixedScriptToken(token);
+			if (nonCjk.length > 0 && cjkRuns.length > 0) {
+				pushUnique(primary, token);
+			}
+			for (const latin of nonCjk) {
+				if (latin.length > 1 && !stop.has(latin)) pushUnique(primary, latin);
+			}
+			for (const run of cjkRuns) {
+				const runLen = codePointLength(run);
+				if (runLen < 2) continue;
+				if (runLen <= 4) pushUnique(primary, run);
+				const subsegs = run.split(CJK_PARTICLE_SPLIT_RE);
+				for (const rawSeg of subsegs) {
+					const seg = stripCjkQuestionAffixes(rawSeg);
+					const segLen = codePointLength(seg);
+					if (segLen < 2 || CJK_STOP_SEGMENTS.has(seg)) continue;
+					if (segLen <= 4) pushUnique(primary, seg);
+					if (segLen >= 3) {
+						for (const shingle of cjkCodePointShingles(seg, [2, 3, 4])) pushUnique(shingles, shingle);
+					}
+				}
+				if (runLen >= 3) {
+					for (const shingle of cjkCodePointShingles(run, [2, 3, 4])) pushUnique(shingles, shingle);
 				}
 			}
 			pushUnique(shingles, token);
@@ -821,22 +823,84 @@ function classifyAbility(query: string): string {
 			"deadline",
 			"timeline",
 			"how far apart",
+			"多久",
+			"幾天",
+			"几天",
+			"幾週",
+			"几周",
+			"幾個月",
+			"几个月",
+			"什麼時候",
+			"什么时候",
+			"何時",
+			"何时",
+			"哪一天",
+			"幾號",
+			"几号",
+			"哪天",
+			"截止",
+			"時間線",
+			"时间线",
+			"時程",
 		].some(w => q.includes(w))
 	)
 		return "TR";
 	if (
-		["list the order", "walk me through", "chronological", "in what order", "sequence of events"].some(w =>
-			q.includes(w),
-		)
+		[
+			"list the order",
+			"walk me through",
+			"chronological",
+			"in what order",
+			"sequence of events",
+			"順序",
+			"顺序",
+			"先後",
+			"先后",
+			"時間順序",
+			"时间顺序",
+			"歷程",
+			"历程",
+		].some(w => q.includes(w))
 	)
 		return "EO";
-	if (["have i", "did i", "am i", "has this", "contradict", "contradiction", "conflict"].some(w => q.includes(w)))
+	if (
+		[
+			"have i",
+			"did i",
+			"am i",
+			"has this",
+			"contradict",
+			"contradiction",
+			"conflict",
+			"矛盾",
+			"衝突",
+			"冲突",
+			"不一致",
+		].some(w => q.includes(w))
+	)
 		return "CR";
-	if (["across my", "across all", "in my project", "in my sessions", "across sessions"].some(w => q.includes(w)))
+	if (
+		[
+			"across my",
+			"across all",
+			"in my project",
+			"in my sessions",
+			"across sessions",
+			"跨會話",
+			"跨会话",
+			"所有專案",
+			"所有项目",
+			"所有對話",
+			"所有对话",
+			"所有會話",
+			"所有会话",
+		].some(w => q.includes(w))
+	)
 		return "MR";
 	if (
 		/^(what|when|where|which|who|how)\s/.test(q) ||
-		["how many", "what is", "what was", "which version", "how much"].some(w => q.includes(w))
+		["how many", "what is", "what was", "which version", "how much"].some(w => q.includes(w)) ||
+		(hasCjk(q) && makeQuestionTokens(q).length > 0)
 	)
 		return "IE";
 	return "";

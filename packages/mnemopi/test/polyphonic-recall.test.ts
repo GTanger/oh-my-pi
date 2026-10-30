@@ -1,5 +1,6 @@
 import { afterEach, describe, expect, it, spyOn } from "bun:test";
 import { type BeamMemoryState, initBeam } from "@oh-my-pi/pi-mnemopi/core/beam";
+import { memoriaRetrieve } from "@oh-my-pi/pi-mnemopi/core/beam/consolidate";
 import { PolyphonicRecallEngine, polyphonicRecall } from "@oh-my-pi/pi-mnemopi/core/polyphonic-recall";
 import { closeQuietly, openDatabase } from "@oh-my-pi/pi-mnemopi/db";
 import { currentLoopPhase } from "@oh-my-pi/pi-utils";
@@ -257,7 +258,7 @@ describe("PolyphonicRecallEngine", () => {
 		}
 	});
 
-	it("matches a consolidated fact with a CJK subject in factVoice for unspaced CJK query", () => {
+	it("matches consolidated facts with 3-char, 4-char, particle-bearing, and supplementary Han CJK subjects in factVoice and default memoriaRetrieve", () => {
 		const beam = makeBeam();
 		try {
 			const engine = new PolyphonicRecallEngine({
@@ -267,21 +268,60 @@ describe("PolyphonicRecallEngine", () => {
 			});
 			const timestamp = new Date().toISOString();
 			insertWorking(beam, "wm-cjk-tsmc", "台積電最新營收超過預期", 0.9, timestamp);
+			insertWorking(beam, "wm-cjk-pku", "北京大學排名位居前列", 0.9, timestamp);
+			insertWorking(beam, "wm-cjk-tokyo", "東京都今日天氣晴朗", 0.9, timestamp);
+			insertWorking(beam, "wm-cjk-extb", "𠮷𠀋的專案紀錄已完成", 0.9, timestamp);
 			beam.db.run(
 				`INSERT INTO consolidated_facts
 					(id, subject, predicate, object, confidence, mention_count, first_seen, last_seen, sources_json, veracity)
-					VALUES ('cf_tsmc_rev', '台積電', '營收', '超過預期', 0.95, 3, ?, ?, ?, 'likely_true')`,
-				[timestamp, timestamp, JSON.stringify(["wm-cjk-tsmc"])],
+					VALUES
+					('cf_tsmc_rev', '台積電', '營收', '超過預期', 0.95, 3, ?, ?, ?, 'likely_true'),
+					('cf_pku_rank', '北京大學', '排名', '前列', 0.95, 2, ?, ?, ?, 'likely_true'),
+					('cf_tokyo_weather', '東京都', '天氣', '晴朗', 0.95, 2, ?, ?, ?, 'likely_true'),
+					('cf_extb_record', '𠮷𠀋', '狀態', '已完成', 0.95, 2, ?, ?, ?, 'likely_true')`,
+				[
+					timestamp,
+					timestamp,
+					JSON.stringify(["wm-cjk-tsmc"]),
+					timestamp,
+					timestamp,
+					JSON.stringify(["wm-cjk-pku"]),
+					timestamp,
+					timestamp,
+					JSON.stringify(["wm-cjk-tokyo"]),
+					timestamp,
+					timestamp,
+					JSON.stringify(["wm-cjk-extb"]),
+				],
+			);
+			beam.db.run(
+				`INSERT INTO memoria_facts
+					(session_id, message_idx, fact_type, key, value, context_snippet, importance, source_memory_id)
+					VALUES
+					(?, 0, 'entity', '北京大學', '排名位居前列', '請問北京大學的排名', 0.9, 'wm-cjk-pku'),
+					(?, 1, 'entity', 'PostgreSQL資料庫', '連線池設定為 32', 'PostgreSQL資料庫連線池設定', 0.95, 'wm-cjk-tsmc'),
+					(?, 2, 'entity', 'postmortem', 'unrelated incident note', 'postmortem review', 0.99, 'wm-cjk-tokyo')`,
+				[beam.sessionId, beam.sessionId, beam.sessionId],
 			);
 
-			const factHits = engine.factVoice("檢查台積電的營收表現");
-			expect(factHits.map(hit => hit.memoryId)).toContain("wm-cjk-tsmc");
+			expect(engine.factVoice("檢查台積電的營收表現").map(hit => hit.memoryId)).toContain("wm-cjk-tsmc");
+			expect(engine.factVoice("請問北京大學的排名").map(hit => hit.memoryId)).toContain("wm-cjk-pku");
+			expect(engine.factVoice("東京都的天氣如何").map(hit => hit.memoryId)).toContain("wm-cjk-tokyo");
+			expect(engine.factVoice("查詢𠮷𠀋的專案紀錄").map(hit => hit.memoryId)).toContain("wm-cjk-extb");
+
+			const defaultMemoria = memoriaRetrieve(beam, "請問北京大學的排名");
+			expect(defaultMemoria.ability).toBe("IE");
+			expect((defaultMemoria.results as Array<{ key?: string }>).map(r => r.key)).toContain("北京大學");
+
+			const mixedMemoria = memoriaRetrieve(beam, "請問PostgreSQL資料庫的連線池設定", null, 1);
+			expect(mixedMemoria.ability).toBe("IE");
+			expect((mixedMemoria.results as Array<{ key?: string }>)[0]?.key).toBe("PostgreSQL資料庫");
 		} finally {
 			closeQuietly(beam.db);
 		}
 	});
 
-	it("activates temporalVoice on CJK temporal queries and deduplicates near-identical CJK memories in diversityRerank", () => {
+	it("activates temporalVoice on CJK temporal queries and deduplicates near-identical CJK memories while keeping distinct mixed-script memories in diversityRerank", () => {
 		const beam = makeBeam();
 		try {
 			const engine = new PolyphonicRecallEngine({
@@ -297,6 +337,8 @@ describe("PolyphonicRecallEngine", () => {
 
 			insertWorking(beam, "wm-cjk-rep1", "台積電法說會公布最新季度合併營收財報與全年資本支出規劃", 0.9, timestamp);
 			insertWorking(beam, "wm-cjk-rep2", "台積電法說會公布最新季度合併營收財報與全年資本支出目標", 0.85, timestamp);
+			insertWorking(beam, "wm-mixed-ts", "TypeScript支援CJK分詞", 0.8, timestamp);
+			insertWorking(beam, "wm-mixed-rs", "Rust支援WASM編譯", 0.75, timestamp);
 
 			const candidates = new Map([
 				[
@@ -314,6 +356,24 @@ describe("PolyphonicRecallEngine", () => {
 						memoryId: "wm-cjk-rep2",
 						combinedScore: 0.04,
 						voiceScores: { hybrid: 0.04 },
+						metadata: {},
+					},
+				],
+				[
+					"wm-mixed-ts",
+					{
+						memoryId: "wm-mixed-ts",
+						combinedScore: 0.03,
+						voiceScores: { hybrid: 0.03 },
+						metadata: {},
+					},
+				],
+				[
+					"wm-mixed-rs",
+					{
+						memoryId: "wm-mixed-rs",
+						combinedScore: 0.02,
+						voiceScores: { hybrid: 0.02 },
 						metadata: {},
 					},
 				],
@@ -336,7 +396,7 @@ describe("PolyphonicRecallEngine", () => {
 				};
 			});
 
-			expect(reranked.map(r => r.id)).toEqual(["wm-cjk-rep1"]);
+			expect(reranked.map(r => r.id)).toEqual(["wm-cjk-rep1", "wm-mixed-ts", "wm-mixed-rs"]);
 		} finally {
 			closeQuietly(beam.db);
 		}

@@ -7,6 +7,14 @@ import type { BeamMemoryState, JsonValue, Metadata, RecallResult, RecallTierLabe
 import { EpisodicGraph, extractProperNouns } from "./episodic-graph";
 import { STOP_WORDS } from "./synonyms";
 import { VeracityConsolidator } from "./veracity-consolidation";
+import {
+	CJK_STOP_SEGMENTS,
+	cjkCodePointShingles,
+	codePointLength,
+	expandCjkCandidateSegments,
+	hasCjk,
+	splitMixedScriptToken,
+} from "../util/regex";
 
 export type PolyphonicVoice = "hybrid" | "vector" | "graph" | "fact" | "temporal";
 
@@ -214,60 +222,15 @@ function cosineAgainstUnit(unit: Float32Array, raw: unknown): number | null {
 	return dot / Math.sqrt(normSq);
 }
 
-const CJK_CHAR_RE = /[\p{Script=Han}\p{Script=Hiragana}\p{Script=Katakana}\p{Script=Hangul}]/u;
-const CJK_RUN_RE = /[\p{Script=Han}\p{Script=Hiragana}\p{Script=Katakana}\p{Script=Hangul}]{2,}/gu;
-const CJK_PARTICLE_SPLIT_RE =
-	/[的了在是和與及或對將把被從向由給為於並而但卻又也還都只就才已曾正要會能可讓使比跟同按依據關]/u;
-const CJK_STOP_SEGMENTS = new Set([
-	"什麼",
-	"如何",
-	"怎麼",
-	"哪些",
-	"哪個",
-	"為什麼",
-	"是否",
-	"可以",
-	"一個",
-	"這個",
-	"那個",
-	"我們",
-	"你們",
-	"他們",
-	"檢查",
-	"查看",
-	"查詢",
-]);
-
 function queryTokens(query: string): string[] {
 	const tokens: string[] = [];
 	for (const match of query.toLowerCase().matchAll(/[\p{L}\p{N}_-]+/gu)) tokens.push(match[0]);
 	return tokens;
 }
 
-function expandCjkCandidateSegments(token: string, seen: Set<string>): void {
-	for (const runMatch of token.matchAll(CJK_RUN_RE)) {
-		const run = runMatch[0];
-		const segments = run.split(CJK_PARTICLE_SPLIT_RE);
-		for (const seg of segments) {
-			if (seg.length < 2 || CJK_STOP_SEGMENTS.has(seg)) continue;
-			if (seg.length <= 6) seen.add(seg);
-			if (seg.length >= 3) {
-				for (let i = 0; i <= seg.length - 2; i++) {
-					const shingle2 = seg.slice(i, i + 2);
-					if (!CJK_STOP_SEGMENTS.has(shingle2)) seen.add(shingle2);
-				}
-				for (let i = 0; i <= seg.length - 3; i++) {
-					const shingle3 = seg.slice(i, i + 3);
-					if (!CJK_STOP_SEGMENTS.has(shingle3)) seen.add(shingle3);
-				}
-			}
-		}
-	}
-}
-
 /**
  * Subject candidates for the fact voice: every 3+ char query word plus adjacent word pairs,
- * plus 2-6 char CJK sub-clauses and 2/3-char shingles for unspaced CJK queries.
+ * plus 2-6 code-point CJK sub-clauses and 2/3/4-code-point shingles for unspaced CJK queries.
  * Stopwords never anchor a subject on their own — the regex extractor stores sentence-initial
  * words like `That` as subjects, so a bare `that` in the query would pull in unrelated memories.
  */
@@ -277,12 +240,19 @@ function factSubjectCandidates(query: string): string[] {
 	for (let i = 0; i < tokens.length; i++) {
 		const word = tokens[i] as string;
 		const isContent = !STOP_WORDS.has(word);
-		const isCjk = CJK_CHAR_RE.test(word);
+		const isCjk = hasCjk(word);
+		const wordLen = isCjk ? codePointLength(word) : word.length;
 		const minLen = isCjk ? 2 : 3;
-		if (isContent && word.length >= minLen && !CJK_STOP_SEGMENTS.has(word)) seen.add(word);
-		if (isCjk && word.length > 2) expandCjkCandidateSegments(word, seen);
+		if (isContent && wordLen >= minLen && !CJK_STOP_SEGMENTS.has(word)) seen.add(word);
+		if (isCjk) {
+			const { nonCjk } = splitMixedScriptToken(word);
+			for (const latin of nonCjk) {
+				if (latin.length >= 3 && !STOP_WORDS.has(latin)) seen.add(latin);
+			}
+			if (wordLen >= 2) expandCjkCandidateSegments(word, seen);
+		}
 		const next = tokens[i + 1];
-		if (next !== undefined && !isCjk && !CJK_CHAR_RE.test(next) && (isContent || !STOP_WORDS.has(next))) {
+		if (next !== undefined && !isCjk && !hasCjk(next) && (isContent || !STOP_WORDS.has(next))) {
 			seen.add(`${word} ${next}`);
 		}
 	}
@@ -292,14 +262,17 @@ function factSubjectCandidates(query: string): string[] {
 function contentTokens(text: string): Set<string> {
 	const out = new Set<string>();
 	for (const token of queryTokens(text)) {
-		if (token.length < 2) continue;
-		if (CJK_CHAR_RE.test(token)) {
-			for (const runMatch of token.matchAll(CJK_RUN_RE)) {
-				const run = runMatch[0];
-				if (run.length === 2) {
+		if (codePointLength(token) < 2) continue;
+		if (hasCjk(token)) {
+			const { nonCjk, cjkRuns } = splitMixedScriptToken(token);
+			for (const latin of nonCjk) {
+				if (latin.length >= 2) out.add(latin);
+			}
+			for (const run of cjkRuns) {
+				if (codePointLength(run) === 2) {
 					out.add(run);
 				} else {
-					for (let i = 0; i <= run.length - 2; i++) out.add(run.slice(i, i + 2));
+					for (const bigram of cjkCodePointShingles(run, [2])) out.add(bigram);
 				}
 			}
 		} else {

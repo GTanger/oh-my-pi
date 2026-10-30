@@ -296,20 +296,31 @@ export class VeracityConsolidator {
 				const sources = parseSources(existing.sources_json);
 				const hasSource = source !== undefined && source !== null && source !== "";
 				const isDuplicateSource = hasSource && sources.includes(source);
-				if (hasSource && !isDuplicateSource) sources.push(source);
-				const newConfidence = isDuplicateSource
-					? existing.confidence
-					: this.bayesianUpdate(existing.confidence, veracity);
-				const newCount = isDuplicateSource ? existing.mention_count : existing.mention_count + 1;
-				const nextVeracity = isDuplicateSource ? existing.veracity : veracity;
-				const nextLastSeen = isDuplicateSource ? existing.last_seen : now;
+				if (isDuplicateSource) {
+					return {
+						subject,
+						predicate,
+						object,
+						confidence: existing.confidence,
+						mention_count: existing.mention_count,
+						first_seen: existing.first_seen,
+						last_seen: existing.last_seen,
+						sources,
+						veracity: existing.veracity,
+						superseded: existing.superseded_by !== null,
+						id: existing.id,
+					};
+				}
+				if (hasSource) sources.push(source);
+				const newConfidence = this.bayesianUpdate(existing.confidence, veracity);
+				const newCount = existing.mention_count + 1;
 				this.conn
 					.query(`
 						UPDATE consolidated_facts
 						SET confidence = ?, mention_count = ?, last_seen = ?, sources_json = ?, veracity = ?, updated_at = ?
 						WHERE id = ?
 					`)
-					.run(newConfidence, newCount, nextLastSeen, JSON.stringify(sources), nextVeracity, now, existing.id);
+					.run(newConfidence, newCount, now, JSON.stringify(sources), veracity, now, existing.id);
 				return {
 					subject,
 					predicate,
@@ -317,9 +328,9 @@ export class VeracityConsolidator {
 					confidence: newConfidence,
 					mention_count: newCount,
 					first_seen: existing.first_seen,
-					last_seen: nextLastSeen,
+					last_seen: now,
 					sources,
-					veracity: nextVeracity,
+					veracity,
 					superseded: existing.superseded_by !== null,
 					id: existing.id,
 				};
