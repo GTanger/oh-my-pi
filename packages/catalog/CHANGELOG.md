@@ -5,6 +5,10 @@
 ### Added
 
 - Added the `prewarm-base-url` catalog axis (`prewarmBaseUrl`) and opted `google` and `google-gemini-cli` into pre-first-turn connection prewarming and `gzip` request body compression (`google-antigravity` also opts into `gzip` compression and declares its sandbox endpoint host) ([#17102](https://github.com/can1357/oh-my-pi/pull/17102) by [@GTanger](https://github.com/GTanger))
+### Changed
+
+- Clamping a requested thinking effort now resolves through the model's `effortMap` alias first, so the request lands on the tier the model serves instead of the nearest lower one ([#17395](https://github.com/can1357/oh-my-pi/pull/17395) by [@Maziar123](https://github.com/Maziar123))
+- Long image-heavy conversations on the official Anthropic API now keep up to 120 MB of inline images before evicting older ones, following the Messages API request limit increase from 32 MB to 128 MB
 
 ### Fixed
 
