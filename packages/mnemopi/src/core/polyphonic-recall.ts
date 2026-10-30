@@ -265,23 +265,18 @@ function factSubjectCandidates(query: string): string[] {
 		}
 		const next = tokens[i + 1];
 		if (next !== undefined) {
+			if (isContent || !STOP_WORDS.has(next)) seen.add(`${word} ${next}`);
 			const nextIsCjk = hasCjk(next);
-			if (!isCjk && !nextIsCjk) {
-				if (isContent || !STOP_WORDS.has(next)) seen.add(`${word} ${next}`);
-			} else if (isContent) {
-				if (!isCjk && nextIsCjk) {
-					if (codePointLength(next) <= 6) seen.add(`${word} ${next}`);
-					const firstClause = stripCjkQuestionAffixes(next.split(CJK_PARTICLE_SPLIT_RE)[0] ?? "");
-					if (firstClause.length >= 2 && firstClause !== next && codePointLength(firstClause) <= 6) {
-						seen.add(`${word} ${firstClause}`);
-					}
-				} else if (isCjk && !nextIsCjk && !STOP_WORDS.has(next)) {
-					if (codePointLength(word) <= 6) seen.add(`${word} ${next}`);
-					const clauses = word.split(CJK_PARTICLE_SPLIT_RE);
-					const lastClause = stripCjkQuestionAffixes(clauses[clauses.length - 1] ?? "");
-					if (lastClause.length >= 2 && lastClause !== word && codePointLength(lastClause) <= 6) {
-						seen.add(`${lastClause} ${next}`);
-					}
+			if (isContent && !isCjk && nextIsCjk) {
+				const firstClause = stripCjkQuestionAffixes(next.split(CJK_PARTICLE_SPLIT_RE)[0] ?? "");
+				if (firstClause.length >= 2 && firstClause !== next && codePointLength(firstClause) <= 6) {
+					seen.add(`${word} ${firstClause}`);
+				}
+			} else if (isContent && isCjk && !nextIsCjk && !STOP_WORDS.has(next)) {
+				const clauses = word.split(CJK_PARTICLE_SPLIT_RE);
+				const lastClause = stripCjkQuestionAffixes(clauses[clauses.length - 1] ?? "");
+				if (lastClause.length >= 2 && lastClause !== word && codePointLength(lastClause) <= 6) {
+					seen.add(`${lastClause} ${next}`);
 				}
 			}
 		}

@@ -928,7 +928,7 @@ function factRetrieve(beam: BeamMemoryState, query: string, topK: number): Memor
 		trimmed.length > 0
 			? [trimmed, trimmed, `%${escapeLike(trimmed)}%`, `%${escapeLike(trimmed)}%`, `%${escapeLike(trimmed)}%`]
 			: [];
-	const allParams = [params[0] as SQLQueryBindings, ...orderParams, ...params.slice(1), topK];
+	const allParams = [...params, ...orderParams, topK];
 	const results = asRows(
 		beam.db
 			.query(

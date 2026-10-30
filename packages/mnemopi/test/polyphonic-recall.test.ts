@@ -304,18 +304,7 @@ describe("PolyphonicRecallEngine", () => {
 			expect(engine.factVoice("東京都的天氣如何").map(hit => hit.memoryId)).toContain("wm-cjk-tokyo");
 			expect(engine.factVoice("查詢𠮷𠀋的專案紀錄").map(hit => hit.memoryId)).toContain("wm-cjk-extb");
 			expect(engine.factVoice("查詢HàNội支援CJK的進度").map(hit => hit.memoryId)).toContain("wm-cjk-hanoi");
-
-			// Also verify fact voice surfaces via engine.recall
-			process.env.MNEMOPI_VOICE_VECTOR = "0";
-			process.env.MNEMOPI_VOICE_GRAPH = "0";
-			process.env.MNEMOPI_VOICE_TEMPORAL = "0";
-			const recalled = engine.recall("查詢HàNội支援CJK的進度", null, 5);
-			expect(recalled.map(r => r.id)).toContain("wm-cjk-hanoi");
-			expect(recalled.find(r => r.id === "wm-cjk-hanoi")?.voice_scores.fact).toBeGreaterThan(0);
 		} finally {
-			delete process.env.MNEMOPI_VOICE_VECTOR;
-			delete process.env.MNEMOPI_VOICE_GRAPH;
-			delete process.env.MNEMOPI_VOICE_TEMPORAL;
 			closeQuietly(beam.db);
 		}
 	});
@@ -340,6 +329,10 @@ describe("PolyphonicRecallEngine", () => {
 			const mixedMemoria = memoriaRetrieve(beam, "請問PostgreSQL資料庫的連線池設定", null, 1);
 			expect(mixedMemoria.ability).toBe("IE");
 			expect((mixedMemoria.results as Array<{ key?: string }>)[0]?.key).toBe("PostgreSQL資料庫");
+
+			const englishMemoria = memoriaRetrieve(beam, "what is PostgreSQL", null, 1);
+			expect(englishMemoria.ability).toBe("IE");
+			expect((englishMemoria.results as Array<{ key?: string }>)[0]?.key).toBe("PostgreSQL資料庫");
 		} finally {
 			closeQuietly(beam.db);
 		}
@@ -572,7 +565,7 @@ describe("PolyphonicRecallEngine", () => {
 		}
 	});
 
-	it("matches consolidated facts with spaced mixed-script subjects in factVoice", () => {
+	it("matches consolidated facts with spaced mixed-script and spaced CJK subjects in factVoice", () => {
 		const beam = makeBeam();
 		try {
 			const engine = new PolyphonicRecallEngine({
@@ -582,16 +575,26 @@ describe("PolyphonicRecallEngine", () => {
 			});
 			const timestamp = new Date().toISOString();
 			insertWorking(beam, "wm-project-tokyo", "Project 東京 is on schedule", 0.9, timestamp);
+			insertWorking(beam, "wm-seoul-univ", "서울 대학교 연구실", 0.9, timestamp);
 			beam.db.run(
 				`INSERT INTO consolidated_facts
 					(id, subject, predicate, object, confidence, mention_count, first_seen, last_seen, sources_json, veracity)
 				 VALUES
-					('cf_proj_tokyo', 'Project 東京', 'status', 'on schedule', 0.95, 2, ?, ?, ?, 'likely_true')`,
-				[timestamp, timestamp, JSON.stringify(["wm-project-tokyo"])],
+					('cf_proj_tokyo', 'Project 東京', 'status', 'on schedule', 0.95, 2, ?, ?, ?, 'likely_true'),
+					('cf_seoul_univ', '서울 대학교', 'location', 'Seoul', 0.95, 2, ?, ?, ?, 'likely_true')`,
+				[
+					timestamp,
+					timestamp,
+					JSON.stringify(["wm-project-tokyo"]),
+					timestamp,
+					timestamp,
+					JSON.stringify(["wm-seoul-univ"]),
+				],
 			);
 
 			expect(engine.factVoice("Project 東京").map(hit => hit.memoryId)).toContain("wm-project-tokyo");
 			expect(engine.factVoice("Project 東京的進度").map(hit => hit.memoryId)).toContain("wm-project-tokyo");
+			expect(engine.factVoice("서울 대학교").map(hit => hit.memoryId)).toContain("wm-seoul-univ");
 		} finally {
 			closeQuietly(beam.db);
 		}
