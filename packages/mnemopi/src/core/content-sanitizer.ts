@@ -6,9 +6,9 @@ export const SIZE_HARD_CAP = 1_000_000;
 export const SIZE_BASE64_CHECK = 100_000;
 export const ENTROPY_THRESHOLD = 5.0;
 
-const DATA_URI_RE = /^data:(?<mime>[^;]+)?(?:;base64)?,(?<payload>.*)/i;
+const DATA_URI_RE = /^data:(?<mime>[^;,]+)?(?:;base64)?,(?<payload>.*)/i;
+const VALID_MIME_RE = /^[A-Za-z0-9!#$&^_.+-]+\/[A-Za-z0-9!#$&^_.+-]+$/;
 const BASE64_RE = /^(?:[A-Za-z0-9+/]{4})*(?:[A-Za-z0-9+/]{2}==|[A-Za-z0-9+/]{3}=)?$/;
-
 export interface BlobMetadata {
 	blob_ref?: string;
 	original_size?: number;
@@ -50,7 +50,9 @@ export function parseDataUri(content: string): [mimeType: string, raw: Buffer] |
 	const match = DATA_URI_RE.exec(content);
 	if (match?.groups === undefined) return null;
 
-	const mimeType = match.groups.mime ?? "application/octet-stream";
+	const rawMime = match.groups.mime;
+	if (rawMime !== undefined && !VALID_MIME_RE.test(rawMime)) return null;
+	const mimeType = rawMime ?? "application/octet-stream";
 	const payload = match.groups.payload ?? "";
 	if (!isValidBase64(payload)) return null;
 
@@ -672,7 +674,6 @@ export function sanitizeContent(content: string): [sanitizedContent: string, met
 				}
 				if (tagRes.stripped || credRes.matchedTypes.length > 0) {
 					bytesToStore = Buffer.from(decoded, "utf8");
-					dataMeta.original_size = bytesToStore.length;
 				}
 			}
 			const sha256 = storeBlob(bytesToStore);
@@ -686,8 +687,8 @@ export function sanitizeContent(content: string): [sanitizedContent: string, met
 	}
 
 	const meta: SanitizeMetadata = {};
+	const originalByteSize = Buffer.byteLength(content, "utf8");
 	let text = content;
-
 	const tagResult = stripInjectedMemoryTags(text);
 	if (tagResult.stripped) {
 		text = tagResult.content;
@@ -710,7 +711,7 @@ export function sanitizeContent(content: string): [sanitizedContent: string, met
 			{
 				...meta,
 				blob_ref: blobRef,
-				original_size: textByteSize,
+				original_size: originalByteSize,
 				extraction_reason: "size_cap",
 			},
 		];
@@ -726,7 +727,7 @@ export function sanitizeContent(content: string): [sanitizedContent: string, met
 			{
 				...meta,
 				blob_ref: blobRef,
-				original_size: textByteSize,
+				original_size: originalByteSize,
 				entropy,
 				extraction_reason: "high_entropy",
 			},

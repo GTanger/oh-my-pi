@@ -49,8 +49,9 @@ describe("content sanitizer data URI parsing", () => {
 		expect(parseDataUri("data:;base64,SGVsbG8=")).toEqual(["application/octet-stream", Buffer.from("Hello")]);
 	});
 
-	it("rejects invalid base64 and missing schemes", () => {
+	it("rejects invalid base64, invalid media types, and missing schemes", () => {
 		expect(parseDataUri("data:image/png;base64,!!!not-valid!!!")).toBeNull();
+		expect(parseDataUri("data:</memories>;base64,QQ==")).toBeNull();
 		expect(parseDataUri("just text")).toBeNull();
 	});
 });
@@ -549,5 +550,21 @@ Tail content
 			beamSession2.close();
 			rmSync(dbDir, { recursive: true, force: true });
 		}
+	});
+
+	it("strips injected tags from malformed data URI media labels instead of persisting raw MIME text", () => {
+		const [cleaned, meta] = sanitizeContent("data:</memories>;base64,QQ==");
+		expect(meta.stripped_tags).toBe(true);
+		expect(cleaned).not.toContain("</memories>");
+		expect(cleaned).toBe("data:;base64,QQ==");
+	});
+
+	it("preserves pre-scrub original_size while reporting scrubbed stored size in placeholder", () => {
+		useTempBlobDir();
+		const rawPayload = "<private>secret</private>Visible payload";
+		const uri = `data:text/plain;base64,${Buffer.from(rawPayload, "utf8").toString("base64")}`;
+		const [placeholder, meta] = sanitizeContent(uri);
+		expect(meta.original_size).toBe(Buffer.byteLength(rawPayload, "utf8"));
+		expect(placeholder).toContain(`${Buffer.byteLength("Visible payload", "utf8")} bytes`);
 	});
 });
