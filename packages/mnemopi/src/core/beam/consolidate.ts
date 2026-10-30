@@ -209,7 +209,7 @@ function asRows(value: unknown): Row[] {
 function escapeLike(value: string): string {
 	return value.replace(/[\\%_]/g, m => `\\${m}`);
 }
-function makeQuestionTokens(query: string): string[] {
+function makeQuestionTokenGroups(query: string): { primary: string[]; shingles: string[]; all: string[] } {
 	const stop = new Set([
 		"a",
 		"an",
@@ -243,9 +243,12 @@ function makeQuestionTokens(query: string): string[] {
 		"who",
 		"with",
 	]);
-	const rawTokens = [...query.toLowerCase().matchAll(/[\p{L}\p{N}_.-]+/gu)]
+	const rawTokens = [...query.matchAll(/[\p{L}\p{N}\u30FC\u3005\uFF66-\uFF9F_.-]+/gu)]
 		.map(m => m[0] ?? "")
-		.filter(token => codePointLength(token) > 1 && !stop.has(token) && !CJK_STOP_SEGMENTS.has(token));
+		.filter(token => {
+			const lower = token.toLowerCase();
+			return codePointLength(lower) > 1 && !stop.has(lower) && !CJK_STOP_SEGMENTS.has(lower);
+		});
 
 	const primary: string[] = [];
 	const shingles: string[] = [];
@@ -258,41 +261,59 @@ function makeQuestionTokens(query: string): string[] {
 		}
 	};
 
-	for (const token of rawTokens) {
+	for (const rawToken of rawTokens) {
+		const token = rawToken.toLowerCase();
 		if (hasCjk(token)) {
-			const { nonCjk, cjkRuns } = splitMixedScriptToken(token);
+			const { nonCjk, cjkRuns } = splitMixedScriptToken(rawToken);
 			if (nonCjk.length > 0 && cjkRuns.length > 0) {
 				pushUnique(primary, token);
+				if (rawToken !== token) pushUnique(primary, rawToken);
 			}
 			for (const latin of nonCjk) {
-				if (latin.length > 1 && !stop.has(latin)) pushUnique(primary, latin);
+				if (latin.length > 1 && !stop.has(latin.toLowerCase())) pushUnique(primary, latin);
 			}
-			for (const run of cjkRuns) {
-				const runLen = codePointLength(run);
-				if (runLen < 2) continue;
-				if (runLen <= 8) pushUnique(primary, run);
-				const subsegs = run.split(CJK_PARTICLE_SPLIT_RE);
-				for (const rawSeg of subsegs) {
-					const seg = stripCjkQuestionAffixes(rawSeg);
-					const segLen = codePointLength(seg);
-					if (segLen < 2 || CJK_STOP_SEGMENTS.has(seg)) continue;
-					if (segLen <= 8) pushUnique(primary, seg);
-					if (segLen >= 3) {
-						for (const shingle of cjkCodePointShingles(seg, [2, 3, 4])) pushUnique(shingles, shingle);
+			for (const rawRun of cjkRuns) {
+				for (const run of new Set([rawRun, rawRun.normalize("NFKC")])) {
+					const runLen = codePointLength(run);
+					if (runLen < 2) continue;
+					const strippedRun = stripCjkQuestionAffixes(run);
+					if (!CJK_PARTICLE_SPLIT_RE.test(strippedRun) && codePointLength(strippedRun) <= 8) {
+						pushUnique(primary, strippedRun);
+					}
+					const subsegs = run.split(CJK_PARTICLE_SPLIT_RE);
+					for (const rawSeg of subsegs) {
+						const seg = stripCjkQuestionAffixes(rawSeg);
+						const segLen = codePointLength(seg);
+						if (segLen < 2 || CJK_STOP_SEGMENTS.has(seg)) continue;
+						if (segLen <= 8) pushUnique(primary, seg);
+						if (segLen >= 3) {
+							for (const shingle of cjkCodePointShingles(seg, [2, 3, 4])) pushUnique(shingles, shingle);
+						}
+					}
+					if (runLen >= 3) {
+						for (const shingle of cjkCodePointShingles(run, [2, 3, 4])) pushUnique(shingles, shingle);
 					}
 				}
-				if (runLen >= 3) {
-					for (const shingle of cjkCodePointShingles(run, [2, 3, 4])) pushUnique(shingles, shingle);
-				}
 			}
-			if (codePointLength(token) <= 8) pushUnique(primary, token);
+			if (!CJK_PARTICLE_SPLIT_RE.test(token) && codePointLength(token) <= 8) pushUnique(primary, token);
 			pushUnique(shingles, token);
 		} else {
 			pushUnique(primary, token);
+			if (rawToken !== token && !/^[\x00-\x7f]*$/.test(rawToken)) pushUnique(primary, rawToken);
 		}
 	}
 
-	return [...primary, ...shingles].slice(0, 8);
+	const all = [...primary, ...shingles].slice(0, 8);
+	const primarySet = new Set(primary);
+	return {
+		primary: all.filter(t => primarySet.has(t)),
+		shingles: all.filter(t => !primarySet.has(t)),
+		all,
+	};
+}
+
+function makeQuestionTokens(query: string): string[] {
+	return makeQuestionTokenGroups(query).all;
 }
 
 function emitEvent(
@@ -853,12 +874,16 @@ function classifyAbility(query: string): string {
 			"chronological",
 			"in what order",
 			"sequence of events",
-			"順序",
-			"顺序",
-			"先後",
-			"先后",
+			"先後順序",
+			"先后顺序",
 			"時間順序",
 			"时间顺序",
+			"事件順序",
+			"事件顺序",
+			"發生順序",
+			"发生顺序",
+			"先後",
+			"先后",
 			"歷程",
 			"历程",
 		].some(w => q.includes(w))
@@ -908,7 +933,7 @@ function classifyAbility(query: string): string {
 }
 
 function factRetrieve(beam: BeamMemoryState, query: string, topK: number): MemoriaRetrieveResult {
-	const tokens = makeQuestionTokens(query);
+	const { primary, all: tokens } = makeQuestionTokenGroups(query);
 	const clauses: string[] = [];
 	const params: SQLQueryBindings[] = [sourceSession(beam)];
 	for (const token of tokens) {
@@ -920,14 +945,31 @@ function factRetrieve(beam: BeamMemoryState, query: string, topK: number): Memor
 	}
 	const where = clauses.length === 0 ? "1=1" : clauses.join(" OR ");
 	const trimmed = query.trim().toLowerCase();
-	const exactMatchClause =
-		trimmed.length > 0
-			? `(CASE WHEN lower(key) = ? OR lower(value) = ? THEN 3 WHEN lower(key) LIKE ? ESCAPE '\\' OR lower(value) LIKE ? ESCAPE '\\' THEN 2 WHEN lower(context_snippet) LIKE ? ESCAPE '\\' THEN 1 ELSE 0 END) DESC, `
-			: "";
-	const orderParams: SQLQueryBindings[] =
-		trimmed.length > 0
-			? [trimmed, trimmed, `%${escapeLike(trimmed)}%`, `%${escapeLike(trimmed)}%`, `%${escapeLike(trimmed)}%`]
-			: [];
+	const orderParts: string[] = [];
+	const orderParams: SQLQueryBindings[] = [];
+	if (trimmed.length > 0) {
+		orderParts.push("WHEN lower(key) = ? OR lower(value) = ? THEN 4");
+		orderParams.push(trimmed, trimmed);
+		const trimmedLike = `%${escapeLike(trimmed)}%`;
+		orderParts.push("WHEN lower(key) LIKE ? ESCAPE '\\' OR lower(value) LIKE ? ESCAPE '\\' THEN 3");
+		orderParams.push(trimmedLike, trimmedLike);
+	}
+	if (primary.length > 0) {
+		const primaryKeyChecks: string[] = [];
+		const primaryCtxChecks: string[] = [];
+		for (const p of primary) {
+			const like = `%${escapeLike(p)}%`;
+			primaryKeyChecks.push("lower(key) LIKE ? ESCAPE '\\' OR lower(value) LIKE ? ESCAPE '\\'");
+			orderParams.push(like, like);
+			primaryCtxChecks.push("lower(context_snippet) LIKE ? ESCAPE '\\'");
+		}
+		for (const p of primary) {
+			orderParams.push(`%${escapeLike(p)}%`);
+		}
+		orderParts.push(`WHEN ${primaryKeyChecks.join(" OR ")} THEN 2`);
+		orderParts.push(`WHEN ${primaryCtxChecks.join(" OR ")} THEN 1`);
+	}
+	const exactMatchClause = orderParts.length > 0 ? `(CASE ${orderParts.join(" ")} ELSE 0 END) DESC, ` : "";
 	const allParams = [...params, ...orderParams, topK];
 	const results = asRows(
 		beam.db
@@ -961,7 +1003,7 @@ function timelineRetrieve(beam: BeamMemoryState, query: string, topK: number): M
 }
 
 function kgRetrieve(beam: BeamMemoryState, query: string, topK: number): MemoriaRetrieveResult {
-	const tokens = makeQuestionTokens(query);
+	const { primary, all: tokens } = makeQuestionTokenGroups(query);
 	const clauses: string[] = [];
 	const params: SQLQueryBindings[] = [sourceSession(beam)];
 	for (const token of tokens) {
@@ -972,13 +1014,27 @@ function kgRetrieve(beam: BeamMemoryState, query: string, topK: number): Memoria
 		params.push(like, like, like);
 	}
 	const where = clauses.length === 0 ? "1=1" : clauses.join(" OR ");
-	params.push(topK);
+	const orderParts: string[] = [];
+	const orderParams: SQLQueryBindings[] = [];
+	if (primary.length > 0) {
+		const primaryChecks: string[] = [];
+		for (const p of primary) {
+			const like = `%${escapeLike(p)}%`;
+			primaryChecks.push(
+				"lower(subject) LIKE ? ESCAPE '\\' OR lower(predicate) LIKE ? ESCAPE '\\' OR lower(object) LIKE ? ESCAPE '\\'",
+			);
+			orderParams.push(like, like, like);
+		}
+		orderParts.push(`WHEN ${primaryChecks.join(" OR ")} THEN 1`);
+	}
+	const rankClause = orderParts.length > 0 ? `(CASE ${orderParts.join(" ")} ELSE 0 END) DESC, ` : "";
+	const allParams = [...params, ...orderParams, topK];
 	const results = asRows(
 		beam.db
 			.query(
-				`SELECT * FROM memoria_kg WHERE session_id = ? AND (${where}) ORDER BY confidence DESC, id DESC LIMIT ?`,
+				`SELECT * FROM memoria_kg WHERE session_id = ? AND (${where}) ORDER BY ${rankClause}confidence DESC, id DESC LIMIT ?`,
 			)
-			.all(...params),
+			.all(...allParams),
 	);
 	return { ability: "MR", query, results };
 }

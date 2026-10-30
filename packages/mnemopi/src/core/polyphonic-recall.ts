@@ -226,7 +226,17 @@ function cosineAgainstUnit(unit: Float32Array, raw: unknown): number | null {
 
 function queryTokens(query: string): string[] {
 	const tokens: string[] = [];
-	for (const match of query.toLowerCase().matchAll(/[\p{L}\p{N}_-]+/gu)) tokens.push(match[0]);
+	for (const match of query.toLowerCase().matchAll(/[\p{L}\p{N}\u30FC\u3005\uFF66-\uFF9F_-]+/gu)) {
+		tokens.push(match[0]);
+	}
+	return tokens;
+}
+
+function rawQueryTokens(query: string): string[] {
+	const tokens: string[] = [];
+	for (const match of query.matchAll(/[\p{L}\p{N}\u30FC\u3005\uFF66-\uFF9F_-]+/gu)) {
+		tokens.push(match[0]);
+	}
 	return tokens;
 }
 
@@ -237,19 +247,24 @@ function queryTokens(query: string): string[] {
  * words like `That` as subjects, so a bare `that` in the query would pull in unrelated memories.
  */
 function factSubjectCandidates(query: string): string[] {
-	const tokens = queryTokens(query);
+	const rawTokens = rawQueryTokens(query);
+	const tokens = rawTokens.map(t => t.toLowerCase());
 	const seen = new Set<string>();
 	for (let i = 0; i < tokens.length; i++) {
 		const word = tokens[i] as string;
+		const rawWord = rawTokens[i] ?? word;
 		const isContent = !STOP_WORDS.has(word);
 		const isCjk = hasCjk(word);
 		const wordLen = isCjk ? codePointLength(word) : word.length;
 		const minLen = isCjk ? 2 : 3;
-		if (isContent && wordLen >= minLen && !CJK_STOP_SEGMENTS.has(word)) seen.add(word);
+		if (isContent && wordLen >= minLen && !CJK_STOP_SEGMENTS.has(word)) {
+			seen.add(word);
+			if (rawWord !== word) seen.add(rawWord);
+		}
 		if (isCjk) {
-			const { nonCjk, cjkRuns } = splitMixedScriptToken(word);
+			const { nonCjk, cjkRuns } = splitMixedScriptToken(rawWord);
 			for (const latin of nonCjk) {
-				if (latin.length >= 3 && !STOP_WORDS.has(latin)) seen.add(latin);
+				if (latin.length >= 3 && !STOP_WORDS.has(latin.toLowerCase())) seen.add(latin);
 			}
 			if (nonCjk.length > 0 && cjkRuns.length > 0) {
 				const strippedWord = stripCjkQuestionAffixes(word);
@@ -261,7 +276,7 @@ function factSubjectCandidates(query: string): string[] {
 					if (codePointLength(strippedSub) >= 2 && codePointLength(strippedSub) <= 12) seen.add(strippedSub);
 				}
 			}
-			if (wordLen >= 2) expandCjkCandidateSegments(word, seen);
+			if (wordLen >= 2) expandCjkCandidateSegments(rawWord, seen);
 		}
 		const next = tokens[i + 1];
 		if (next !== undefined) {
@@ -291,13 +306,17 @@ function contentTokens(text: string): Set<string> {
 		if (hasCjk(token)) {
 			const { nonCjk, cjkRuns } = splitMixedScriptToken(token);
 			for (const latin of nonCjk) {
-				if (cjkRuns.length > 0 ? latin.length >= 1 : latin.length >= 2) out.add(latin);
+				if (latin.length >= 1) out.add(latin.toLowerCase());
+			}
+			if (cjkRuns.length === 0) {
+				out.add(token);
 			}
 			for (const run of cjkRuns) {
-				if (codePointLength(run) === 2) {
-					out.add(run);
+				const normalizedRun = run.normalize("NFKC");
+				if (codePointLength(normalizedRun) === 2) {
+					out.add(normalizedRun);
 				} else {
-					for (const bigram of cjkCodePointShingles(run, [2])) out.add(bigram);
+					for (const bigram of cjkCodePointShingles(normalizedRun, [2])) out.add(bigram);
 				}
 			}
 		} else {

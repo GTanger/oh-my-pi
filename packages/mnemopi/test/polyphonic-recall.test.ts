@@ -321,10 +321,12 @@ describe("PolyphonicRecallEngine", () => {
 					(?, 2, 'entity', 'postmortem', 'unrelated incident note', 'postmortem review', 0.99, 'wm-cjk-tokyo')`,
 				[beam.sessionId, beam.sessionId, beam.sessionId],
 			);
-
 			const defaultMemoria = memoriaRetrieve(beam, "請問北京大學的排名");
 			expect(defaultMemoria.ability).toBe("IE");
 			expect((defaultMemoria.results as Array<{ key?: string }>).map(r => r.key)).toContain("北京大學");
+
+			const nonTemporalOrder = memoriaRetrieve(beam, "資料表欄位順序是什麼");
+			expect(nonTemporalOrder.ability).toBe("IE");
 
 			const mixedMemoria = memoriaRetrieve(beam, "請問PostgreSQL資料庫的連線池設定", null, 1);
 			expect(mixedMemoria.ability).toBe("IE");
@@ -497,13 +499,27 @@ describe("PolyphonicRecallEngine", () => {
 				`INSERT INTO memoria_facts
 					(session_id, message_idx, fact_type, key, value, context_snippet, importance, timestamp)
 				 VALUES (?, 1, 'IE', '國立故宮博物院', '位於台北', '國立故宮博物院收藏豐富', 0.99, ?),
-				        (?, 2, 'IE', '國立臺灣大學', '位於台北', '國立臺灣大學是一所研究型大學', 0.85, ?)`,
-				[beam.sessionId, timestamp, beam.sessionId, timestamp],
+				        (?, 2, 'IE', '國立臺灣大學', '位於台北', '國立臺灣大學是一所研究型大學', 0.85, ?),
+				        (?, 3, 'IE', '北京天氣', '晴朗', '北京天氣預報', 0.99, ?),
+				        (?, 4, 'IE', '北京大學', '頂尖學府', '北京大學排名位居前列', 0.85, ?)`,
+				[
+					beam.sessionId,
+					timestamp,
+					beam.sessionId,
+					timestamp,
+					beam.sessionId,
+					timestamp,
+					beam.sessionId,
+					timestamp,
+				],
 			);
 
 			const retrieved = memoriaRetrieve(beam, "國立臺灣大學", "IE", 1);
 			expect(retrieved.ability).toBe("IE");
 			expect((retrieved.results as Array<{ key?: string }>)[0]?.key).toBe("國立臺灣大學");
+
+			const clauseRetrieved = memoriaRetrieve(beam, "請問北京大學的排名", "IE", 1);
+			expect((clauseRetrieved.results as Array<{ key?: string }>)[0]?.key).toBe("北京大學");
 		} finally {
 			closeQuietly(beam.db);
 		}
@@ -520,6 +536,8 @@ describe("PolyphonicRecallEngine", () => {
 			const timestamp = new Date().toISOString();
 			insertWorking(beam, "wm-c-lang", "C語言支援指標", 0.85, timestamp);
 			insertWorking(beam, "wm-r-lang", "R語言支援統計", 0.8, timestamp);
+			insertWorking(beam, "wm-a-type", "A型 v2", 0.78, timestamp);
+			insertWorking(beam, "wm-b-type", "B型 v2", 0.75, timestamp);
 
 			const candidates = new Map([
 				[
@@ -540,8 +558,25 @@ describe("PolyphonicRecallEngine", () => {
 						metadata: {},
 					},
 				],
+				[
+					"wm-a-type",
+					{
+						memoryId: "wm-a-type",
+						combinedScore: 0.06,
+						voiceScores: { hybrid: 0.06 },
+						metadata: {},
+					},
+				],
+				[
+					"wm-b-type",
+					{
+						memoryId: "wm-b-type",
+						combinedScore: 0.05,
+						voiceScores: { hybrid: 0.05 },
+						metadata: {},
+					},
+				],
 			]);
-
 			const reranked = engine.diversityRerank(candidates, 10, candidate => {
 				const row = beam.db
 					.query("SELECT id, content FROM working_memory WHERE id = ?")
@@ -559,7 +594,7 @@ describe("PolyphonicRecallEngine", () => {
 				};
 			});
 
-			expect(reranked.map(r => r.id)).toEqual(["wm-c-lang", "wm-r-lang"]);
+			expect(reranked.map(r => r.id)).toEqual(["wm-c-lang", "wm-r-lang", "wm-a-type", "wm-b-type"]);
 		} finally {
 			closeQuietly(beam.db);
 		}
@@ -576,12 +611,20 @@ describe("PolyphonicRecallEngine", () => {
 			const timestamp = new Date().toISOString();
 			insertWorking(beam, "wm-project-tokyo", "Project 東京 is on schedule", 0.9, timestamp);
 			insertWorking(beam, "wm-seoul-univ", "서울 대학교 연구실", 0.9, timestamp);
+			insertWorking(beam, "wm-seoul-unspaced", "서울대학교 위치 안내", 0.9, timestamp);
+			insertWorking(beam, "wm-jp-server", "サーバー設定が完了", 0.9, timestamp);
+			insertWorking(beam, "wm-jp-hw-server", "ｻｰﾊﾞｰ設定が完了", 0.9, timestamp);
+			insertWorking(beam, "wm-moscow-cjk", "Москва支援CJK部署", 0.9, timestamp);
 			beam.db.run(
 				`INSERT INTO consolidated_facts
 					(id, subject, predicate, object, confidence, mention_count, first_seen, last_seen, sources_json, veracity)
 				 VALUES
 					('cf_proj_tokyo', 'Project 東京', 'status', 'on schedule', 0.95, 2, ?, ?, ?, 'likely_true'),
-					('cf_seoul_univ', '서울 대학교', 'location', 'Seoul', 0.95, 2, ?, ?, ?, 'likely_true')`,
+					('cf_seoul_univ', '서울 대학교', 'location', 'Seoul', 0.95, 2, ?, ?, ?, 'likely_true'),
+					('cf_seoul_unspaced', '서울대학교', 'location', 'Seoul', 0.95, 2, ?, ?, ?, 'likely_true'),
+					('cf_jp_server', 'サーバー設定', 'status', 'ready', 0.95, 2, ?, ?, ?, 'likely_true'),
+					('cf_jp_hw_server', 'ｻｰﾊﾞｰ', 'status', 'ready', 0.95, 2, ?, ?, ?, 'likely_true'),
+					('cf_moscow_cjk', 'Москва', 'status', 'ready', 0.95, 2, ?, ?, ?, 'likely_true')`,
 				[
 					timestamp,
 					timestamp,
@@ -589,12 +632,28 @@ describe("PolyphonicRecallEngine", () => {
 					timestamp,
 					timestamp,
 					JSON.stringify(["wm-seoul-univ"]),
+					timestamp,
+					timestamp,
+					JSON.stringify(["wm-seoul-unspaced"]),
+					timestamp,
+					timestamp,
+					JSON.stringify(["wm-jp-server"]),
+					timestamp,
+					timestamp,
+					JSON.stringify(["wm-jp-hw-server"]),
+					timestamp,
+					timestamp,
+					JSON.stringify(["wm-moscow-cjk"]),
 				],
 			);
 
 			expect(engine.factVoice("Project 東京").map(hit => hit.memoryId)).toContain("wm-project-tokyo");
 			expect(engine.factVoice("Project 東京的進度").map(hit => hit.memoryId)).toContain("wm-project-tokyo");
 			expect(engine.factVoice("서울 대학교").map(hit => hit.memoryId)).toContain("wm-seoul-univ");
+			expect(engine.factVoice("서울대학교의 위치").map(hit => hit.memoryId)).toContain("wm-seoul-unspaced");
+			expect(engine.factVoice("サーバー設定を確認").map(hit => hit.memoryId)).toContain("wm-jp-server");
+			expect(engine.factVoice("ｻｰﾊﾞｰ設定を確認").map(hit => hit.memoryId)).toContain("wm-jp-hw-server");
+			expect(engine.factVoice("查詢Москва支援CJK的進度").map(hit => hit.memoryId)).toContain("wm-moscow-cjk");
 		} finally {
 			closeQuietly(beam.db);
 		}

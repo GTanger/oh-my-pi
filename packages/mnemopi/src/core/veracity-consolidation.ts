@@ -1,5 +1,6 @@
 import type { Database } from "bun:sqlite";
 import { type DatabasePath, openDatabase } from "../db";
+import { unicodeCaseVariants } from "../util/regex";
 
 export const VERACITY_WEIGHTS = Object.freeze({
 	stated: 1.0,
@@ -443,8 +444,9 @@ export class VeracityConsolidator {
 	 * lower-case query word finds `PostgreSQL` or `Alice`.
 	 */
 	getConsolidatedFactsBySubjects(subjects: readonly string[], minConfidence = 0.5): ConsolidatedFact[] {
-		const lowered = [...new Set(subjects.map(subject => subject.toLowerCase()).filter(subject => subject !== ""))];
-		if (lowered.length === 0) return [];
+		const lowered = [
+			...new Set(subjects.filter(subject => subject !== "").flatMap(subject => unicodeCaseVariants(subject))),
+		];
 		const placeholders = lowered.map(() => "?").join(", ");
 		const rows = this.conn
 			.query(`
