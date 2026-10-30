@@ -495,4 +495,105 @@ describe("PolyphonicRecallEngine", () => {
 			closeQuietly(beam.db);
 		}
 	});
+
+	it("prioritizes an exact long CJK fact over higher-importance partial shingle matches in memoriaRetrieve", () => {
+		const beam = makeBeam();
+		try {
+			const timestamp = new Date().toISOString();
+			beam.db.run(
+				`INSERT INTO memoria_facts
+					(session_id, message_idx, fact_type, key, value, context_snippet, importance, timestamp)
+				 VALUES (?, 1, 'IE', '國立故宮博物院', '位於台北', '國立故宮博物院收藏豐富', 0.99, ?),
+				        (?, 2, 'IE', '國立臺灣大學', '位於台北', '國立臺灣大學是一所研究型大學', 0.85, ?)`,
+				[beam.sessionId, timestamp, beam.sessionId, timestamp],
+			);
+
+			const retrieved = memoriaRetrieve(beam, "國立臺灣大學", "IE", 1);
+			expect(retrieved.ability).toBe("IE");
+			expect((retrieved.results as Array<{ key?: string }>)[0]?.key).toBe("國立臺灣大學");
+		} finally {
+			closeQuietly(beam.db);
+		}
+	});
+
+	it("retains distinct 1-character mixed-script memories in diversityRerank", () => {
+		const beam = makeBeam();
+		try {
+			const engine = new PolyphonicRecallEngine({
+				db: beam.db,
+				sessionId: beam.sessionId,
+				channelId: beam.channelId,
+			});
+			const timestamp = new Date().toISOString();
+			insertWorking(beam, "wm-c-lang", "C語言支援指標", 0.85, timestamp);
+			insertWorking(beam, "wm-r-lang", "R語言支援統計", 0.8, timestamp);
+
+			const candidates = new Map([
+				[
+					"wm-c-lang",
+					{
+						memoryId: "wm-c-lang",
+						combinedScore: 0.08,
+						voiceScores: { hybrid: 0.08 },
+						metadata: {},
+					},
+				],
+				[
+					"wm-r-lang",
+					{
+						memoryId: "wm-r-lang",
+						combinedScore: 0.07,
+						voiceScores: { hybrid: 0.07 },
+						metadata: {},
+					},
+				],
+			]);
+
+			const reranked = engine.diversityRerank(candidates, 10, candidate => {
+				const row = beam.db
+					.query("SELECT id, content FROM working_memory WHERE id = ?")
+					.get(candidate.memoryId) as { id: string; content: string } | null;
+				if (!row) return null;
+				return {
+					id: row.id,
+					content: row.content,
+					score: candidate.combinedScore,
+					combined_score: candidate.combinedScore,
+					voice_scores: candidate.voiceScores,
+					metadata: candidate.metadata,
+					tier: "working",
+					tier_label: "working",
+				};
+			});
+
+			expect(reranked.map(r => r.id)).toEqual(["wm-c-lang", "wm-r-lang"]);
+		} finally {
+			closeQuietly(beam.db);
+		}
+	});
+
+	it("matches consolidated facts with spaced mixed-script subjects in factVoice", () => {
+		const beam = makeBeam();
+		try {
+			const engine = new PolyphonicRecallEngine({
+				db: beam.db,
+				sessionId: beam.sessionId,
+				channelId: beam.channelId,
+			});
+			const timestamp = new Date().toISOString();
+			insertWorking(beam, "wm-project-tokyo", "Project 東京 is on schedule", 0.9, timestamp);
+			beam.db.run(
+				`INSERT INTO consolidated_facts
+					(id, subject, predicate, object, confidence, mention_count, first_seen, last_seen, sources_json, veracity)
+				 VALUES
+					('cf_proj_tokyo', 'Project 東京', 'status', 'on schedule', 0.95, 2, ?, ?, ?, 'likely_true')`,
+				[timestamp, timestamp, JSON.stringify(["wm-project-tokyo"])],
+			);
+
+			expect(engine.factVoice("Project 東京").map(hit => hit.memoryId)).toContain("wm-project-tokyo");
+			expect(engine.factVoice("Project 東京的進度").map(hit => hit.memoryId)).toContain("wm-project-tokyo");
+		} finally {
+			closeQuietly(beam.db);
+		}
+	});
 });

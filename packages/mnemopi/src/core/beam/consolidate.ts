@@ -270,13 +270,13 @@ function makeQuestionTokens(query: string): string[] {
 			for (const run of cjkRuns) {
 				const runLen = codePointLength(run);
 				if (runLen < 2) continue;
-				if (runLen <= 4) pushUnique(primary, run);
+				if (runLen <= 8) pushUnique(primary, run);
 				const subsegs = run.split(CJK_PARTICLE_SPLIT_RE);
 				for (const rawSeg of subsegs) {
 					const seg = stripCjkQuestionAffixes(rawSeg);
 					const segLen = codePointLength(seg);
 					if (segLen < 2 || CJK_STOP_SEGMENTS.has(seg)) continue;
-					if (segLen <= 4) pushUnique(primary, seg);
+					if (segLen <= 8) pushUnique(primary, seg);
 					if (segLen >= 3) {
 						for (const shingle of cjkCodePointShingles(seg, [2, 3, 4])) pushUnique(shingles, shingle);
 					}
@@ -285,6 +285,7 @@ function makeQuestionTokens(query: string): string[] {
 					for (const shingle of cjkCodePointShingles(run, [2, 3, 4])) pushUnique(shingles, shingle);
 				}
 			}
+			if (codePointLength(token) <= 8) pushUnique(primary, token);
 			pushUnique(shingles, token);
 		} else {
 			pushUnique(primary, token);
@@ -918,13 +919,22 @@ function factRetrieve(beam: BeamMemoryState, query: string, topK: number): Memor
 		params.push(like, like, like);
 	}
 	const where = clauses.length === 0 ? "1=1" : clauses.join(" OR ");
-	params.push(topK);
+	const trimmed = query.trim().toLowerCase();
+	const exactMatchClause =
+		trimmed.length > 0
+			? `(CASE WHEN lower(key) = ? OR lower(value) = ? THEN 3 WHEN lower(key) LIKE ? ESCAPE '\\' OR lower(value) LIKE ? ESCAPE '\\' THEN 2 WHEN lower(context_snippet) LIKE ? ESCAPE '\\' THEN 1 ELSE 0 END) DESC, `
+			: "";
+	const orderParams: SQLQueryBindings[] =
+		trimmed.length > 0
+			? [trimmed, trimmed, `%${escapeLike(trimmed)}%`, `%${escapeLike(trimmed)}%`, `%${escapeLike(trimmed)}%`]
+			: [];
+	const allParams = [params[0] as SQLQueryBindings, ...orderParams, ...params.slice(1), topK];
 	const results = asRows(
 		beam.db
 			.query(
-				`SELECT * FROM memoria_facts WHERE session_id = ? AND (${where}) ORDER BY importance DESC, id DESC LIMIT ?`,
+				`SELECT * FROM memoria_facts WHERE session_id = ? AND (${where}) ORDER BY ${exactMatchClause}importance DESC, id DESC LIMIT ?`,
 			)
-			.all(...params),
+			.all(...allParams),
 	);
 	return { ability: "IE", query, results };
 }

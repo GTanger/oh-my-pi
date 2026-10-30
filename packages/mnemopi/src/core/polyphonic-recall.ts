@@ -264,8 +264,26 @@ function factSubjectCandidates(query: string): string[] {
 			if (wordLen >= 2) expandCjkCandidateSegments(word, seen);
 		}
 		const next = tokens[i + 1];
-		if (next !== undefined && !isCjk && !hasCjk(next) && (isContent || !STOP_WORDS.has(next))) {
-			seen.add(`${word} ${next}`);
+		if (next !== undefined) {
+			const nextIsCjk = hasCjk(next);
+			if (!isCjk && !nextIsCjk) {
+				if (isContent || !STOP_WORDS.has(next)) seen.add(`${word} ${next}`);
+			} else if (isContent) {
+				if (!isCjk && nextIsCjk) {
+					if (codePointLength(next) <= 6) seen.add(`${word} ${next}`);
+					const firstClause = stripCjkQuestionAffixes(next.split(CJK_PARTICLE_SPLIT_RE)[0] ?? "");
+					if (firstClause.length >= 2 && firstClause !== next && codePointLength(firstClause) <= 6) {
+						seen.add(`${word} ${firstClause}`);
+					}
+				} else if (isCjk && !nextIsCjk && !STOP_WORDS.has(next)) {
+					if (codePointLength(word) <= 6) seen.add(`${word} ${next}`);
+					const clauses = word.split(CJK_PARTICLE_SPLIT_RE);
+					const lastClause = stripCjkQuestionAffixes(clauses[clauses.length - 1] ?? "");
+					if (lastClause.length >= 2 && lastClause !== word && codePointLength(lastClause) <= 6) {
+						seen.add(`${lastClause} ${next}`);
+					}
+				}
+			}
 		}
 	}
 	return [...seen];
@@ -278,7 +296,7 @@ function contentTokens(text: string): Set<string> {
 		if (hasCjk(token)) {
 			const { nonCjk, cjkRuns } = splitMixedScriptToken(token);
 			for (const latin of nonCjk) {
-				if (latin.length >= 2) out.add(latin);
+				if (cjkRuns.length > 0 ? latin.length >= 1 : latin.length >= 2) out.add(latin);
 			}
 			for (const run of cjkRuns) {
 				if (codePointLength(run) === 2) {
