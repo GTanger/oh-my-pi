@@ -3,6 +3,7 @@ import { logger } from "@oh-my-pi/pi-utils";
 import { polyphonicRecallEnabled } from "../../config";
 import { generateId, stableMemoryId } from "../../util/ids";
 import {
+	CJK_CLAUSE_PARTICLE_RE,
 	CJK_PARTICLE_SPLIT_RE,
 	CJK_STOP_SEGMENTS,
 	cjkCodePointShingles,
@@ -209,7 +210,12 @@ function asRows(value: unknown): Row[] {
 function escapeLike(value: string): string {
 	return value.replace(/[\\%_]/g, m => `\\${m}`);
 }
-function makeQuestionTokenGroups(query: string): { primary: string[]; shingles: string[]; all: string[] } {
+function makeQuestionTokenGroups(query: string): {
+	exactPrimary: string[];
+	primary: string[];
+	shingles: string[];
+	all: string[];
+} {
 	const stop = new Set([
 		"a",
 		"an",
@@ -266,8 +272,17 @@ function makeQuestionTokenGroups(query: string): { primary: string[]; shingles: 
 		if (hasCjk(token)) {
 			const { nonCjk, cjkRuns } = splitMixedScriptToken(rawToken);
 			if (nonCjk.length > 0 && cjkRuns.length > 0) {
-				pushUnique(primary, token);
-				if (rawToken !== token) pushUnique(primary, rawToken);
+				const strippedToken = stripCjkQuestionAffixes(token);
+				for (const clauseRaw of strippedToken.split(CJK_CLAUSE_PARTICLE_RE)) {
+					const clause = stripCjkQuestionAffixes(clauseRaw);
+					if (codePointLength(clause) >= 2 && !CJK_STOP_SEGMENTS.has(clause)) {
+						pushUnique(primary, clause);
+					}
+				}
+				if (!CJK_CLAUSE_PARTICLE_RE.test(token)) {
+					pushUnique(primary, token);
+					if (rawToken !== token) pushUnique(primary, rawToken);
+				}
 			}
 			for (const latin of nonCjk) {
 				if (latin.length > 1 && !stop.has(latin.toLowerCase())) pushUnique(primary, latin);
@@ -277,17 +292,27 @@ function makeQuestionTokenGroups(query: string): { primary: string[]; shingles: 
 					const runLen = codePointLength(run);
 					if (runLen < 2) continue;
 					const strippedRun = stripCjkQuestionAffixes(run);
-					if (!CJK_PARTICLE_SPLIT_RE.test(strippedRun) && codePointLength(strippedRun) <= 8) {
-						pushUnique(primary, strippedRun);
-					}
-					const subsegs = run.split(CJK_PARTICLE_SPLIT_RE);
-					for (const rawSeg of subsegs) {
-						const seg = stripCjkQuestionAffixes(rawSeg);
-						const segLen = codePointLength(seg);
-						if (segLen < 2 || CJK_STOP_SEGMENTS.has(seg)) continue;
-						if (segLen <= 8) pushUnique(primary, seg);
-						if (segLen >= 3) {
-							for (const shingle of cjkCodePointShingles(seg, [2, 3, 4])) pushUnique(shingles, shingle);
+					for (const clauseRaw of strippedRun.split(CJK_CLAUSE_PARTICLE_RE)) {
+						const clause = stripCjkQuestionAffixes(clauseRaw);
+						const clauseLen = codePointLength(clause);
+						if (clauseLen < 2 || CJK_STOP_SEGMENTS.has(clause)) continue;
+						const validSubsegs = clause
+							.split(CJK_PARTICLE_SPLIT_RE)
+							.map(stripCjkQuestionAffixes)
+							.filter(s => codePointLength(s) >= 2 && !CJK_STOP_SEGMENTS.has(s));
+						if (validSubsegs.length <= 1) {
+							if (clauseLen <= 12) pushUnique(primary, clause);
+							for (const sub of validSubsegs) {
+								if (codePointLength(sub) <= 12) pushUnique(primary, sub);
+							}
+						} else {
+							for (const sub of validSubsegs) {
+								if (codePointLength(sub) <= 12) pushUnique(primary, sub);
+							}
+							if (clauseLen <= 12) pushUnique(shingles, clause);
+						}
+						if (clauseLen >= 3) {
+							for (const shingle of cjkCodePointShingles(clause, [2, 3, 4])) pushUnique(shingles, shingle);
 						}
 					}
 					if (runLen >= 3) {
@@ -295,7 +320,6 @@ function makeQuestionTokenGroups(query: string): { primary: string[]; shingles: 
 					}
 				}
 			}
-			if (!CJK_PARTICLE_SPLIT_RE.test(token) && codePointLength(token) <= 8) pushUnique(primary, token);
 			pushUnique(shingles, token);
 		} else {
 			pushUnique(primary, token);
@@ -305,8 +329,11 @@ function makeQuestionTokenGroups(query: string): { primary: string[]; shingles: 
 
 	const all = [...primary, ...shingles].slice(0, 8);
 	const primarySet = new Set(primary);
+	const primaryInAll = all.filter(t => primarySet.has(t));
+	const exactPrimary = primaryInAll.filter(t => !primaryInAll.some(other => other !== t && other.includes(t)));
 	return {
-		primary: all.filter(t => primarySet.has(t)),
+		exactPrimary,
+		primary: primaryInAll,
 		shingles: all.filter(t => !primarySet.has(t)),
 		all,
 	};
@@ -933,7 +960,7 @@ function classifyAbility(query: string): string {
 }
 
 function factRetrieve(beam: BeamMemoryState, query: string, topK: number): MemoriaRetrieveResult {
-	const { primary, all: tokens } = makeQuestionTokenGroups(query);
+	const { exactPrimary, primary, all: tokens } = makeQuestionTokenGroups(query);
 	const clauses: string[] = [];
 	const params: SQLQueryBindings[] = [sourceSession(beam)];
 	for (const token of tokens) {
@@ -948,11 +975,20 @@ function factRetrieve(beam: BeamMemoryState, query: string, topK: number): Memor
 	const orderParts: string[] = [];
 	const orderParams: SQLQueryBindings[] = [];
 	if (trimmed.length > 0) {
-		orderParts.push("WHEN lower(key) = ? OR lower(value) = ? THEN 4");
+		orderParts.push("WHEN lower(key) = ? OR lower(value) = ? THEN 5");
 		orderParams.push(trimmed, trimmed);
 		const trimmedLike = `%${escapeLike(trimmed)}%`;
-		orderParts.push("WHEN lower(key) LIKE ? ESCAPE '\\' OR lower(value) LIKE ? ESCAPE '\\' THEN 3");
+		orderParts.push("WHEN lower(key) LIKE ? ESCAPE '\\' OR lower(value) LIKE ? ESCAPE '\\' THEN 4");
 		orderParams.push(trimmedLike, trimmedLike);
+	}
+	if (exactPrimary.length > 0) {
+		const exactKeyChecks: string[] = [];
+		for (const p of exactPrimary) {
+			const like = `%${escapeLike(p)}%`;
+			exactKeyChecks.push("lower(key) LIKE ? ESCAPE '\\' OR lower(value) LIKE ? ESCAPE '\\'");
+			orderParams.push(like, like);
+		}
+		orderParts.push(`WHEN ${exactKeyChecks.join(" OR ")} THEN 3`);
 	}
 	if (primary.length > 0) {
 		const primaryKeyChecks: string[] = [];
@@ -982,7 +1018,7 @@ function factRetrieve(beam: BeamMemoryState, query: string, topK: number): Memor
 }
 
 function timelineRetrieve(beam: BeamMemoryState, query: string, topK: number): MemoriaRetrieveResult {
-	const tokens = makeQuestionTokens(query);
+	const { exactPrimary, primary, all: tokens } = makeQuestionTokenGroups(query);
 	const clauses: string[] = [];
 	const params: SQLQueryBindings[] = [sourceSession(beam)];
 	for (const token of tokens) {
@@ -991,19 +1027,40 @@ function timelineRetrieve(beam: BeamMemoryState, query: string, topK: number): M
 		params.push(like, like);
 	}
 	const where = clauses.length === 0 ? "1=1" : clauses.join(" OR ");
-	params.push(topK);
+	const orderParts: string[] = [];
+	const orderParams: SQLQueryBindings[] = [];
+	if (exactPrimary.length > 0) {
+		const exactChecks: string[] = [];
+		for (const p of exactPrimary) {
+			const like = `%${escapeLike(p)}%`;
+			exactChecks.push("lower(description) LIKE ? ESCAPE '\\' OR date LIKE ? ESCAPE '\\'");
+			orderParams.push(like, like);
+		}
+		orderParts.push(`WHEN ${exactChecks.join(" OR ")} THEN 2`);
+	}
+	if (primary.length > 0) {
+		const primaryChecks: string[] = [];
+		for (const p of primary) {
+			const like = `%${escapeLike(p)}%`;
+			primaryChecks.push("lower(description) LIKE ? ESCAPE '\\' OR date LIKE ? ESCAPE '\\'");
+			orderParams.push(like, like);
+		}
+		orderParts.push(`WHEN ${primaryChecks.join(" OR ")} THEN 1`);
+	}
+	const rankClause = orderParts.length > 0 ? `(CASE ${orderParts.join(" ")} ELSE 0 END) DESC, ` : "";
+	const allParams = [...params, ...orderParams, topK];
 	const results = asRows(
 		beam.db
 			.query(
-				`SELECT * FROM memoria_timelines WHERE session_id = ? AND (${where}) ORDER BY date ASC, event_id ASC LIMIT ?`,
+				`SELECT * FROM memoria_timelines WHERE session_id = ? AND (${where}) ORDER BY ${rankClause}date ASC, event_id ASC LIMIT ?`,
 			)
-			.all(...params),
+			.all(...allParams),
 	);
 	return { ability: "TR", query, results };
 }
 
 function kgRetrieve(beam: BeamMemoryState, query: string, topK: number): MemoriaRetrieveResult {
-	const { primary, all: tokens } = makeQuestionTokenGroups(query);
+	const { exactPrimary, primary, all: tokens } = makeQuestionTokenGroups(query);
 	const clauses: string[] = [];
 	const params: SQLQueryBindings[] = [sourceSession(beam)];
 	for (const token of tokens) {
@@ -1014,8 +1071,24 @@ function kgRetrieve(beam: BeamMemoryState, query: string, topK: number): Memoria
 		params.push(like, like, like);
 	}
 	const where = clauses.length === 0 ? "1=1" : clauses.join(" OR ");
+	const trimmed = query.trim().toLowerCase();
 	const orderParts: string[] = [];
 	const orderParams: SQLQueryBindings[] = [];
+	if (trimmed.length > 0) {
+		orderParts.push("WHEN lower(subject) = ? OR lower(object) = ? THEN 3");
+		orderParams.push(trimmed, trimmed);
+	}
+	if (exactPrimary.length > 0) {
+		const exactChecks: string[] = [];
+		for (const p of exactPrimary) {
+			const like = `%${escapeLike(p)}%`;
+			exactChecks.push(
+				"lower(subject) LIKE ? ESCAPE '\\' OR lower(predicate) LIKE ? ESCAPE '\\' OR lower(object) LIKE ? ESCAPE '\\'",
+			);
+			orderParams.push(like, like, like);
+		}
+		orderParts.push(`WHEN ${exactChecks.join(" OR ")} THEN 2`);
+	}
 	if (primary.length > 0) {
 		const primaryChecks: string[] = [];
 		for (const p of primary) {

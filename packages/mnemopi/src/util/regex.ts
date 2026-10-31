@@ -5,9 +5,12 @@ export const CJK_RUN_RE =
 	/[\p{Script=Han}\p{Script=Hiragana}\p{Script=Katakana}\p{Script=Hangul}\u30FC\u3005\uFF66-\uFF9F]{2,}/gu;
 const NON_CJK_TOKEN_RUN_RE =
 	/(?:(?![\p{Script=Han}\p{Script=Hiragana}\p{Script=Katakana}\p{Script=Hangul}\u30FC\u3005\uFF66-\uFF9F])[\p{L}\p{N}])(?:(?![\p{Script=Han}\p{Script=Hiragana}\p{Script=Katakana}\p{Script=Hangul}\u30FC\u3005\uFF66-\uFF9F])[\p{L}\p{N}_-])*/gu;
-/** Regular expression for splitting CJK clauses on Chinese, Japanese, and Korean grammatical particles. */
+/** Regular expression for splitting CJK phrases on possessive, modal, and Japanese/Korean grammatical particles while preserving conjunction-bearing entity names (e.g. `大和銀行`). */
+export const CJK_CLAUSE_PARTICLE_RE =
+	/(?:について|に関して|を確認|を調べ|에서|으로|에게|부터|까지|[的之了嗎呢吧啊呀嘛在從向由給對把被將をがはにでともへや의])/u;
+/** Regular expression for splitting CJK clauses on Chinese, Japanese, and Korean grammatical particles and conjunctions. */
 export const CJK_PARTICLE_SPLIT_RE =
-	/(?:について|に関して|を確認|を調べ|에서|으로|에게|부터|까지|[的了嗎呢吧啊呀嘛和與及或對將把被從向由給為於並而但卻又也還只就才已曾讓跟をがはにでともへや은는이가을를의에로과와도만])/u;
+	/(?:について|に関して|を確認|を調べ|에서|으로|에게|부터|까지|[的之了嗎呢吧啊呀嘛和與及或對將把被從向由給為於在並而但卻又也還只就才已曾讓跟をがはにでともへや은는이가을를의에로과와도만])/u;
 const CJK_TRAILING_PARTICLE_RE =
 	/(?:について|に関して|を確認|を調べ|에서|으로|에게|부터|까지|[をがはにでともへや은는이가을를의에로과와도만])+$/u;
 const HOMOGENEOUS_CJK_SUBRUN_RE =
@@ -332,23 +335,30 @@ export function expandCjkCandidateSegments(token: string, seen: Set<string>): vo
 		for (const run of new Set([rawRun, rawRun.normalize("NFKC")])) {
 			const runLen = codePointLength(run);
 			if (runLen < 2) continue;
-			addCandidateWithNfkc(run, seen, 6);
+			addCandidateWithNfkc(run, seen, Infinity);
 			const strippedRun = stripCjkQuestionAffixes(run);
-			if (strippedRun !== run) addCandidateWithNfkc(strippedRun, seen, 6);
+			if (strippedRun !== run) addCandidateWithNfkc(strippedRun, seen, Infinity);
 			for (const shingle of cjkCodePointShingles(run, [2, 3, 4])) seen.add(shingle);
 
 			for (const subMatch of run.matchAll(HOMOGENEOUS_CJK_SUBRUN_RE)) {
 				const subRun = subMatch[0] ?? "";
-				addCandidateWithNfkc(subRun, seen, 6);
+				addCandidateWithNfkc(subRun, seen, Infinity);
+			}
+
+			for (const clauseRaw of strippedRun.split(CJK_CLAUSE_PARTICLE_RE)) {
+				const clause = stripCjkQuestionAffixes(clauseRaw);
+				if (codePointLength(clause) >= 2 && !CJK_STOP_SEGMENTS.has(clause)) {
+					addCandidateWithNfkc(clause, seen, Infinity);
+				}
 			}
 
 			for (const rawSeg of run.split(CJK_PARTICLE_SPLIT_RE)) {
 				for (const seg of [rawSeg, stripCjkQuestionAffixes(rawSeg)]) {
 					const segLen = codePointLength(seg);
 					if (segLen < 2 || CJK_STOP_SEGMENTS.has(seg)) continue;
-					addCandidateWithNfkc(seg, seen, 6);
+					addCandidateWithNfkc(seg, seen, Infinity);
 					for (const subMatch of seg.matchAll(HOMOGENEOUS_CJK_SUBRUN_RE)) {
-						addCandidateWithNfkc(subMatch[0] ?? "", seen, 6);
+						addCandidateWithNfkc(subMatch[0] ?? "", seen, Infinity);
 					}
 					if (segLen >= 3) {
 						for (const shingle of cjkCodePointShingles(seg, [2, 3, 4])) seen.add(shingle);

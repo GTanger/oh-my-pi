@@ -321,6 +321,22 @@ describe("PolyphonicRecallEngine", () => {
 					(?, 2, 'entity', 'postmortem', 'unrelated incident note', 'postmortem review', 0.99, 'wm-cjk-tokyo')`,
 				[beam.sessionId, beam.sessionId, beam.sessionId],
 			);
+			beam.db.run(
+				`INSERT INTO memoria_timelines
+					(session_id, event_id, date, description, source_memory_id)
+					VALUES
+					(?, 1, '2026-01-01', '整理內部資料歸檔', 'wm-cjk-tokyo'),
+					(?, 2, '2026-03-01', '完成PostgreSQL資料庫叢集遷移', 'wm-cjk-tsmc')`,
+				[beam.sessionId, beam.sessionId],
+			);
+			beam.db.run(
+				`INSERT INTO memoria_kg
+					(session_id, subject, predicate, object, confidence, source_memory_id)
+					VALUES
+					(?, '中國銀行', 'located_in', '北京', 0.99, 'wm-cjk-pku'),
+					(?, '大和銀行', 'located_in', '大阪', 0.75, 'wm-cjk-tokyo')`,
+				[beam.sessionId, beam.sessionId],
+			);
 			const defaultMemoria = memoriaRetrieve(beam, "請問北京大學的排名");
 			expect(defaultMemoria.ability).toBe("IE");
 			expect((defaultMemoria.results as Array<{ key?: string }>).map(r => r.key)).toContain("北京大學");
@@ -335,6 +351,16 @@ describe("PolyphonicRecallEngine", () => {
 			const englishMemoria = memoriaRetrieve(beam, "what is PostgreSQL", null, 1);
 			expect(englishMemoria.ability).toBe("IE");
 			expect((englishMemoria.results as Array<{ key?: string }>)[0]?.key).toBe("PostgreSQL資料庫");
+
+			const timelineMemoria = memoriaRetrieve(beam, "PostgreSQL資料庫", "TR", 1);
+			expect(timelineMemoria.ability).toBe("TR");
+			expect((timelineMemoria.results as Array<{ event_id?: number }>)[0]?.event_id).toBe(2);
+
+			const daiwaDirect = memoriaRetrieve(beam, "大和銀行", "MR", 1);
+			expect((daiwaDirect.results as Array<{ subject?: string }>)[0]?.subject).toBe("大和銀行");
+
+			const daiwaQuestion = memoriaRetrieve(beam, "請問大和銀行的位置", "MR", 1);
+			expect((daiwaQuestion.results as Array<{ subject?: string }>)[0]?.subject).toBe("大和銀行");
 		} finally {
 			closeQuietly(beam.db);
 		}
@@ -615,6 +641,7 @@ describe("PolyphonicRecallEngine", () => {
 			insertWorking(beam, "wm-jp-server", "サーバー設定が完了", 0.9, timestamp);
 			insertWorking(beam, "wm-jp-hw-server", "ｻｰﾊﾞｰ設定が完了", 0.9, timestamp);
 			insertWorking(beam, "wm-moscow-cjk", "Москва支援CJK部署", 0.9, timestamp);
+			insertWorking(beam, "wm-sf-branch", "サンフランシスコ支社の開設", 0.9, timestamp);
 			beam.db.run(
 				`INSERT INTO consolidated_facts
 					(id, subject, predicate, object, confidence, mention_count, first_seen, last_seen, sources_json, veracity)
@@ -624,7 +651,8 @@ describe("PolyphonicRecallEngine", () => {
 					('cf_seoul_unspaced', '서울대학교', 'location', 'Seoul', 0.95, 2, ?, ?, ?, 'likely_true'),
 					('cf_jp_server', 'サーバー設定', 'status', 'ready', 0.95, 2, ?, ?, ?, 'likely_true'),
 					('cf_jp_hw_server', 'ｻｰﾊﾞｰ', 'status', 'ready', 0.95, 2, ?, ?, ?, 'likely_true'),
-					('cf_moscow_cjk', 'Москва', 'status', 'ready', 0.95, 2, ?, ?, ?, 'likely_true')`,
+					('cf_moscow_cjk', 'Москва', 'status', 'ready', 0.95, 2, ?, ?, ?, 'likely_true'),
+					('cf_sf_branch', 'サンフランシスコ', 'status', 'opened', 0.95, 2, ?, ?, ?, 'likely_true')`,
 				[
 					timestamp,
 					timestamp,
@@ -644,6 +672,9 @@ describe("PolyphonicRecallEngine", () => {
 					timestamp,
 					timestamp,
 					JSON.stringify(["wm-moscow-cjk"]),
+					timestamp,
+					timestamp,
+					JSON.stringify(["wm-sf-branch"]),
 				],
 			);
 
@@ -654,6 +685,7 @@ describe("PolyphonicRecallEngine", () => {
 			expect(engine.factVoice("サーバー設定を確認").map(hit => hit.memoryId)).toContain("wm-jp-server");
 			expect(engine.factVoice("ｻｰﾊﾞｰ設定を確認").map(hit => hit.memoryId)).toContain("wm-jp-hw-server");
 			expect(engine.factVoice("查詢Москва支援CJK的進度").map(hit => hit.memoryId)).toContain("wm-moscow-cjk");
+			expect(engine.factVoice("サンフランシスコについて").map(hit => hit.memoryId)).toContain("wm-sf-branch");
 		} finally {
 			closeQuietly(beam.db);
 		}

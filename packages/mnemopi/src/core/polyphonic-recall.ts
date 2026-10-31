@@ -269,11 +269,11 @@ function factSubjectCandidates(query: string): string[] {
 			if (nonCjk.length > 0 && cjkRuns.length > 0) {
 				const strippedWord = stripCjkQuestionAffixes(word);
 				for (const seg of [word, strippedWord]) {
-					if (codePointLength(seg) <= 12) seen.add(seg);
+					if (codePointLength(seg) >= 2 && !CJK_STOP_SEGMENTS.has(seg)) seen.add(seg);
 				}
 				for (const sub of strippedWord.split(CJK_PARTICLE_SPLIT_RE)) {
 					const strippedSub = stripCjkQuestionAffixes(sub);
-					if (codePointLength(strippedSub) >= 2 && codePointLength(strippedSub) <= 12) seen.add(strippedSub);
+					if (codePointLength(strippedSub) >= 2 && !CJK_STOP_SEGMENTS.has(strippedSub)) seen.add(strippedSub);
 				}
 			}
 			if (wordLen >= 2) expandCjkCandidateSegments(rawWord, seen);
@@ -284,13 +284,13 @@ function factSubjectCandidates(query: string): string[] {
 			const nextIsCjk = hasCjk(next);
 			if (isContent && !isCjk && nextIsCjk) {
 				const firstClause = stripCjkQuestionAffixes(next.split(CJK_PARTICLE_SPLIT_RE)[0] ?? "");
-				if (firstClause.length >= 2 && firstClause !== next && codePointLength(firstClause) <= 6) {
+				if (codePointLength(firstClause) >= 2 && firstClause !== next) {
 					seen.add(`${word} ${firstClause}`);
 				}
 			} else if (isContent && isCjk && !nextIsCjk && !STOP_WORDS.has(next)) {
 				const clauses = word.split(CJK_PARTICLE_SPLIT_RE);
 				const lastClause = stripCjkQuestionAffixes(clauses[clauses.length - 1] ?? "");
-				if (lastClause.length >= 2 && lastClause !== word && codePointLength(lastClause) <= 6) {
+				if (codePointLength(lastClause) >= 2 && lastClause !== word) {
 					seen.add(`${lastClause} ${next}`);
 				}
 			}
