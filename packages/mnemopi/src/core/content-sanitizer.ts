@@ -134,6 +134,15 @@ export function isInjectedMemoryTagName(tagName: string): boolean {
  * - An unclosed opening injected tag truncates the remainder of `content` from that tag onward.
  * - An orphan closing injected tag is removed in place.
  */
+function isTagWhitespaceCode(code: number): boolean {
+	return (
+		code === 32 ||
+		(code >= 9 && code <= 13) ||
+		code === 0x00a0 ||
+		(code > 127 && /\s/.test(String.fromCharCode(code)))
+	);
+}
+
 export function stripInjectedMemoryTags(content: string): { content: string; stripped: boolean } {
 	let ltIdx = content.indexOf("<");
 	if (ltIdx === -1) {
@@ -149,7 +158,7 @@ export function stripInjectedMemoryTags(content: string): { content: string; str
 
 	while (ltIdx !== -1) {
 		let ptr = ltIdx + 1;
-		while (ptr < content.length && (content.charCodeAt(ptr) === 32 || content.charCodeAt(ptr) === 9)) {
+		while (ptr < content.length && isTagWhitespaceCode(content.charCodeAt(ptr))) {
 			ptr++;
 		}
 
@@ -157,7 +166,7 @@ export function stripInjectedMemoryTags(content: string): { content: string; str
 		if (ptr < content.length && content.charCodeAt(ptr) === 47 /* '/' */) {
 			isClosing = true;
 			ptr++;
-			while (ptr < content.length && (content.charCodeAt(ptr) === 32 || content.charCodeAt(ptr) === 9)) {
+			while (ptr < content.length && isTagWhitespaceCode(content.charCodeAt(ptr))) {
 				ptr++;
 			}
 		}
@@ -191,9 +200,7 @@ export function stripInjectedMemoryTags(content: string): { content: string; str
 		// Next char after tagName must be EOF, '>', '/', or ASCII whitespace
 		if (nameEnd < content.length) {
 			const afterCode = content.charCodeAt(nameEnd);
-			const isWhitespace =
-				afterCode === 32 || afterCode === 9 || afterCode === 10 || afterCode === 13 || afterCode === 12;
-			if (afterCode !== 62 /* '>' */ && afterCode !== 47 /* '/' */ && !isWhitespace) {
+			if (afterCode !== 62 /* '>' */ && afterCode !== 47 /* '/' */ && !isTagWhitespaceCode(afterCode)) {
 				ltIdx = content.indexOf("<", ltIdx + 1);
 				continue;
 			}
@@ -222,7 +229,7 @@ export function stripInjectedMemoryTags(content: string): { content: string; str
 				chunks.push(content.slice(lastIndex, ltIdx));
 			}
 			let slashScan = gtIdx - 1;
-			while (slashScan > nameEnd && (content.charCodeAt(slashScan) === 32 || content.charCodeAt(slashScan) === 9)) {
+			while (slashScan > nameEnd && isTagWhitespaceCode(content.charCodeAt(slashScan))) {
 				slashScan--;
 			}
 			const isSelfClosing = slashScan >= nameEnd && content.charCodeAt(slashScan) === 47; /* '/' */
@@ -627,19 +634,107 @@ export function redactRememberWrite<M extends string | object, O>(memory: M, opt
 	return [scrubbedMemory, scrubbedOptions];
 }
 
-function isTextualMime(mimeType: string): boolean {
-	const lower = mimeType.trim().toLowerCase();
+const EXPLICIT_TEXTUAL_APPLICATION_MIMES: ReadonlySet<string> = new Set([
+	"application/json",
+	"application/ld+json",
+	"application/ndjson",
+	"application/x-ndjson",
+	"application/xml",
+	"application/xhtml+xml",
+	"application/javascript",
+	"application/x-javascript",
+	"application/ecmascript",
+	"application/x-www-form-urlencoded",
+	"application/yaml",
+	"application/x-yaml",
+	"application/toml",
+	"application/x-toml",
+	"application/sql",
+	"application/graphql",
+	"application/csv",
+	"application/rtf",
+	"application/x-sh",
+	"application/x-csh",
+	"application/x-httpd-php",
+]);
+
+const KNOWN_BINARY_APPLICATION_MIMES: ReadonlySet<string> = new Set([
+	"application/octet-stream",
+	"application/pdf",
+	"application/zip",
+	"application/gzip",
+	"application/x-gzip",
+	"application/x-tar",
+	"application/x-bzip2",
+	"application/x-xz",
+	"application/x-7z-compressed",
+	"application/x-rar-compressed",
+	"application/zstd",
+	"application/wasm",
+	"application/protobuf",
+	"application/x-protobuf",
+	"application/java-archive",
+	"application/epub+zip",
+	"application/ogg",
+	"application/msword",
+	"application/vnd.ms-excel",
+	"application/vnd.ms-powerpoint",
+	"application/x-sqlite3",
+	"application/vnd.sqlite3",
+]);
+
+function isKnownBinaryMime(lower: string): boolean {
+	if (lower === "image/svg+xml") return false;
+	if (
+		lower.startsWith("image/") ||
+		lower.startsWith("audio/") ||
+		lower.startsWith("video/") ||
+		lower.startsWith("font/") ||
+		lower.startsWith("model/")
+	) {
+		return true;
+	}
+	if (KNOWN_BINARY_APPLICATION_MIMES.has(lower)) return true;
+	if (lower.startsWith("application/vnd.openxmlformats-officedocument.")) return true;
 	return (
+		lower.endsWith("+zip") ||
+		lower.endsWith("+gzip") ||
+		lower.endsWith("+cbor") ||
+		lower.endsWith("+protobuf") ||
+		lower.endsWith("+msgpack") ||
+		lower.endsWith("+ber") ||
+		lower.endsWith("+der")
+	);
+}
+
+function isTextualMime(mimeType: string, rawBytes?: Uint8Array): boolean {
+	const lower = mimeType.trim().toLowerCase();
+	if (
 		lower === "" ||
 		lower.startsWith("text/") ||
-		lower === "application/json" ||
-		lower === "application/xml" ||
-		lower === "application/javascript" ||
-		lower === "application/ecmascript" ||
-		lower === "application/x-www-form-urlencoded" ||
+		lower === "image/svg+xml" ||
+		EXPLICIT_TEXTUAL_APPLICATION_MIMES.has(lower) ||
 		lower.endsWith("+json") ||
-		lower.endsWith("+xml")
-	);
+		lower.endsWith("+xml") ||
+		lower.endsWith("+yaml") ||
+		lower.endsWith("+toml") ||
+		lower.endsWith("+csv") ||
+		lower.endsWith("+jwt")
+	) {
+		return true;
+	}
+	if (isKnownBinaryMime(lower)) {
+		return false;
+	}
+	if (rawBytes !== undefined) {
+		try {
+			new TextDecoder("utf-8", { fatal: true }).decode(rawBytes);
+			return true;
+		} catch {
+			return false;
+		}
+	}
+	return false;
 }
 
 /**
@@ -661,7 +756,7 @@ export function sanitizeContent(content: string): [sanitizedContent: string, met
 				extraction_reason: "data_uri",
 			};
 			const omittedMime = /^data:(?:;base64)?,/i.test(content);
-			if (omittedMime || isTextualMime(mimeType)) {
+			if (omittedMime || isTextualMime(mimeType, rawBytes)) {
 				let decoded = new TextDecoder("utf-8", { fatal: false }).decode(rawBytes);
 				const tagRes = stripInjectedMemoryTags(decoded);
 				if (tagRes.stripped) {
