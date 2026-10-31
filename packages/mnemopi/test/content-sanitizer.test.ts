@@ -567,4 +567,17 @@ Tail content
 		expect(meta.original_size).toBe(Buffer.byteLength(rawPayload, "utf8"));
 		expect(placeholder).toContain(`${Buffer.byteLength("Visible payload", "utf8")} bytes`);
 	});
+
+	it("scrubs MIME-less data URIs as default text per RFC 2397 before writing blob bytes", () => {
+		const blobRoot = useTempBlobDir();
+		const rawPayload = "<private>hidden</private>Authorization: Bearer secretBearerToken1234567890";
+		const uri = `data:;base64,${Buffer.from(rawPayload, "utf8").toString("base64")}`;
+		const [, meta] = sanitizeContent(uri);
+		expect(meta.extraction_reason).toBe("data_uri");
+		expect(meta.stripped_tags).toBe(true);
+		expect(meta.redacted_secrets).toContain("auth_bearer_basic");
+		const sha = (meta.blob_ref ?? "").replace("blob://sha256/", "");
+		const stored = readFileSync(join(blobRoot, sha.slice(0, 2), sha.slice(0, 4), sha), "utf8");
+		expect(stored).toBe("Authorization: Bearer [REDACTED]");
+	});
 });

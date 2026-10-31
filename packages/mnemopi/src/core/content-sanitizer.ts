@@ -660,7 +660,8 @@ export function sanitizeContent(content: string): [sanitizedContent: string, met
 				mime: mimeType,
 				extraction_reason: "data_uri",
 			};
-			if (isTextualMime(mimeType)) {
+			const omittedMime = /^data:(?:;base64)?,/i.test(content);
+			if (omittedMime || isTextualMime(mimeType)) {
 				let decoded = new TextDecoder("utf-8", { fatal: false }).decode(rawBytes);
 				const tagRes = stripInjectedMemoryTags(decoded);
 				if (tagRes.stripped) {
