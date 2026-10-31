@@ -2,6 +2,10 @@
 
 ## [Unreleased]
 
+### Changed
+
+- RPC mode now prewarms the active model's API connection on `model_changed` events and when typing triggers `predict_word`, matching interactive mode ([#17102](https://github.com/can1357/oh-my-pi/pull/17102) by [@GTanger](https://github.com/GTanger))
+
 ## [18.14.1] - 2026-10-31
 
 ### Added
@@ -17,10 +21,6 @@
 
 - `read` of a web page keeps the title, description, author and dates of its `<meta>` tags and lists the others by name only, so pages cost about 6% fewer tokens ([#17393](https://github.com/can1357/oh-my-pi/pull/17393) by [@will-bogusz](https://github.com/will-bogusz))
 - On the Anthropic API, the newest message now keeps all its images up to the 128 MB request limit, past the 120 MB image budget ([#17492](https://github.com/can1357/oh-my-pi/pull/17492) by [@will-bogusz](https://github.com/will-bogusz))
-
-### Changed
-
-- RPC mode now prewarms the active model's API connection on `model_changed` events and when typing triggers `predict_word`, matching interactive mode ([#17102](https://github.com/can1357/oh-my-pi/pull/17102) by [@GTanger](https://github.com/GTanger))
 
 ### Fixed
 
